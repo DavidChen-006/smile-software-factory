@@ -24,9 +24,14 @@ mux_session() {
 	else printf 'smile-%s' "$(basename "$SMILE_ROOT")"; fi
 }
 
-# load_backend <name>: source its file, or exit 2 when that file does not exist. One check
-# covers a backend outside the three names and one whose spike has not landed yet.
+# load_backend <name>: source its file, or exit 2. The name is checked against the three the
+# contract allows before it is ever used as a path component, so a handle or a config value can
+# never name a file outside mux.d/. The existence check then covers cmux and herdr until S8.
 load_backend() {
+	case "$1" in
+		tmux|cmux|herdr) ;;
+		*) printf 'smile mux: unknown backend %s\n' "$1" >&2; exit 2 ;;
+	esac
 	local file="$SMILE_ROOT/smile/bash/mux.d/$1"
 	[ -f "$file" ] || { printf 'smile mux: unknown backend %s\n' "$1" >&2; exit 2; }
 	. "$file"
@@ -56,7 +61,7 @@ case "$verb" in
 				if command -v "$b" >/dev/null 2>&1; then backend="$b"; break; fi
 			done
 		fi
-		[ -n "$backend" ] || fail "missing backend: none of tmux, cmux, herdr on PATH"
+		[ -n "$backend" ] || fail "missing backend, none of tmux, cmux, herdr on PATH"
 		load_backend "$backend"
 		[ -d "$2" ] || fail "no such directory $2"
 		backend_spawn "$@"

@@ -246,13 +246,21 @@ feature_mux() {
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL mux: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
 	smile="$fixture/smile/smile"
 	[ -x "$smile" ] || { printf 'FAIL mux: %s is not executable\n' "$smile"; return 1; }
-	[ -x "$fixture/smile/bash/mux" ] || [ -f "$fixture/smile/py/mux.py" ] \
-		|| { printf 'NOT IMPLEMENTED mux (no mux command stamped)\n'; exit 2; }
+	# the file for the runtime under test, so --runtime py on a bash-only stamp is not a pass
+	case "$runtime" in
+		bash) [ -x "$fixture/smile/bash/mux" ] || { printf 'NOT IMPLEMENTED mux (no smile/bash/mux stamped)\n'; exit 2; } ;;
+		py) [ -f "$fixture/smile/py/backends/tmux.py" ] || { printf 'NOT IMPLEMENTED mux (no smile/py/backends/tmux.py stamped)\n'; exit 2; } ;;
+	esac
 
-	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
-	if [ -n "$backend" ]; then
-		sed -i.bak "s/^backend:.*/backend: $backend/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
-	fi
+	# The backend key is written on every run, empty when --backend is absent, so a value a
+	# previous feature run left behind cannot decide this one.
+	case "$backend" in
+		''|tmux|cmux|herdr|screen) ;;
+		*) printf 'FAIL mux: --backend %s is not a backend name\n' "$backend"; return 1 ;;
+	esac
+	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml"
+	sed -i.bak "s/^backend:.*/backend: $backend/" "$fixture/smile.config.yaml"
+	rm -f "$fixture/smile.config.yaml.bak"
 	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
 
 	# The fixture's own session, so nothing of the user's is ever touched.
