@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# verify-smile: drive the SMILE factory against a throwaway fixture repo and keep the proof.
+#
+#   verify-smile up                                   create a fixture, print "fixture ready <runid> <path>"
+#   verify-smile feature <name> [--runtime bash|py] [--real-review] [--backend <b>] [--run <runid>]
+#   verify-smile down <runid>                         collect evidence, tear the fixture down
+#   verify-smile list                                 known runs and whether their fixture still exists
+#
+# A run is one manifest at ~/.smile-verify/<runid>/manifest.json. Every command reads or writes
+# that manifest and nothing else, so any later agent can pick a run up cold.
+set -euo pipefail
+
+EVIDENCE_ROOT="${SMILE_VERIFY_ROOT:-$HOME/.smile-verify}"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SMILE_REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+
+die() { printf 'verify-smile: %s\n' "$*" >&2; exit 1; }
+log() { printf '[verify-smile] %s\n' "$*"; }
+
+manifest_path() { printf '%s/%s/manifest.json' "$EVIDENCE_ROOT" "$1"; }
+
+# read one top-level string field from a manifest
+mf() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$(manifest_path "$1")" "$2"; }
+
+require_manifest() {
+	[ -f "$(manifest_path "$1")" ] || die "no manifest for run '$1' under $EVIDENCE_ROOT; refusing"
+}
+
+latest_run() {
+	ls -1 "$EVIDENCE_ROOT" 2>/dev/null | sort | tail -1
+}
+
+# ---------------------------------------------------------------- up
+cmd_up() {
+	command -v gh >/dev/null || die "gh missing"
+	command -v bd >/dev/null || die "bd missing"
+	command -v tmux >/dev/null || die "tmux missing"
+	command -v git >/dev/null || die "git missing"
+	gh auth status >/dev/null 2>&1 || die "gh is not logged in"
+
+	local runid owner name tmp fixture session evidence smile_commit
+	runid="$(date -u +%Y%m%dT%H%M%SZ)-$(head -c 2 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+	owner=$(gh api user --jq .login)
+	name="smile-verify-$runid"
+	session="smile-verify-$runid"
+	evidence="$EVIDENCE_ROOT/$runid"
+	mkdir -p "$evidence"
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/smile-verify.XXXXXX")
+	fixture="$tmp/$name"
+
+	log "creating private repo $owner/$name"
+	(cd "$tmp" && gh repo create "$name" --private --clone >/dev/null 2>&1) \
+		|| die "gh repo create $name failed"
+	[ -d "$fixture/.git" ] || die "clone missing at $fixture"
+
+	(
+		cd "$fixture"
+		git config user.email "verify-smile@localhost"
+		git config user.name "verify-smile"
+		printf '# %s\n\nSMILE verification fixture. Safe to delete.\n' "$name" > README.md
+		git add README.md
+		git commit -q -m "chore: fixture init"
+		git branch -M main
+		git push -q -u origin main
+	)
+
+	log "seeding beads"
+	local bead_a bead_b
+	(cd "$fixture" && BD_NON_INTERACTIVE=1 bd init --prefix sv >/dev/null 2>&1) || die "bd init failed"
+	bead_a=$(cd "$fixture" && bd create "bead A: add a file" --silent)
+	bead_b=$(cd "$fixture" && bd create "bead B: add a second file, after A" --deps "$bead_a" --silent)
+	local ready_ids
+	ready_ids=$(cd "$fixture" && bd ready --json | python3 -c 'import json,sys; print(" ".join(i["id"] for i in json.load(sys.stdin)))')
+	[ "$ready_ids" = "$bead_a" ] || die "expected only $bead_a ready, got '$ready_ids'"
+
+	log "opening tmux session $session"
+	tmux new-session -d -s "$session" -c "$fixture"
+
+	smile_commit=$(git -C "$SMILE_REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
+	local install_result
+	if [ -f "$SMILE_REPO/install.py" ]; then
+		log "stamping SMILE from $SMILE_REPO@$smile_commit"
+		if python3 "$SMILE_REPO/install.py" "$fixture" > "$evidence/install-stamp.log" 2>&1; then
+			install_result="stamped"
+		else
+			install_result="stamp-failed"
+			log "install.py failed, see $evidence/install-stamp.log"
+		fi
+	else
+		install_result="skipped"
+		log "install skipped, no install.py yet"
+	fi
+
+	python3 - "$(manifest_path "$runid")" <<EOF
+import json, sys
+json.dump({
+    "runid": "$runid",
+    "owner": "$owner",
+    "repo": "$owner/$name",
+    "repo_name": "$name",
+    "fixture": "$fixture",
+    "tmp": "$tmp",
+    "tmux_session": "$session",
+    "smile_repo": "$SMILE_REPO",
+    "smile_commit": "$smile_commit",
+    "bead_a": "$bead_a",
+    "bead_b": "$bead_b",
+    "install": "$install_result",
+    "state": "up"
+}, open(sys.argv[1], "w"), indent=2)
+EOF
+	printf 'fixture ready %s %s\n' "$runid" "$fixture"
+}
+
+# ---------------------------------------------------------------- feature
+cmd_feature() {
+	local name="${1:-}"; shift || true
+	[ -n "$name" ] || die "usage: verify-smile feature <name> [--runtime bash|py] [--real-review] [--backend <b>] [--run <runid>]"
+	local runtime=bash real_review=0 backend="" runid=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--runtime) runtime="$2"; shift ;;
+			--real-review) real_review=1 ;;
+			--backend) backend="$2"; shift ;;
+			--run) runid="$2"; shift ;;
+			*) die "unknown flag $1" ;;
+		esac
+		shift
+	done
+	[ -n "$runid" ] || runid=$(latest_run)
+	[ -n "$runid" ] || die "no run found; run 'verify-smile up' first"
+	require_manifest "$runid"
+	local fixture evidence logf
+	fixture=$(mf "$runid" fixture)
+	evidence="$EVIDENCE_ROOT/$runid"
+	logf="$evidence/$name.log"
+	{
+		printf '=== feature %s runtime=%s real_review=%s backend=%s run=%s at %s\n' \
+			"$name" "$runtime" "$real_review" "${backend:-default}" "$runid" "$(date -u +%FT%TZ)"
+		case "$name" in
+			install) feature_install "$runid" "$fixture" "$runtime" ;;
+			doctor|mux|loop|review|gate|watchtower|narrate)
+				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
+				exit 2 ;;
+			*) die "unknown feature '$name'; see features/README.md" ;;
+		esac
+	} 2>&1 | tee -a "$logf"
+	# tee masks the pipeline status; re-derive PASS from the log tail
+	tail -1 "$logf" | grep -q '^PASS' || { tail -1 "$logf" | grep -q '^NOT IMPLEMENTED' && exit 2; exit 1; }
+}
+
+feature_install() {
+	local runid="$1" fixture="$2" runtime="$3"
+	local install
+	install=$(mf "$runid" install)
+	[ -d "$fixture/.beads" ] || { printf 'FAIL install: no .beads in fixture\n'; return 1; }
+	tmux has-session -t "$(mf "$runid" tmux_session)" 2>/dev/null \
+		|| { printf 'FAIL install: tmux session missing\n'; return 1; }
+	case "$install" in
+		skipped)
+			printf 'PASS install (stamp skipped, no runtime yet)\n' ;;
+		stamped)
+			[ -x "$fixture/smile/smile" ] || { printf 'FAIL install: smile/smile not stamped or not executable\n'; return 1; }
+			[ -f "$fixture/smile.config.yaml" ] || { printf 'FAIL install: smile.config.yaml missing\n'; return 1; }
+			printf 'PASS install (stamped, runtime=%s)\n' "$runtime" ;;
+		*)
+			printf 'FAIL install: stamp result %s\n' "$install"; return 1 ;;
+	esac
+}
+
+# ---------------------------------------------------------------- down
+cmd_down() {
+	local runid="${1:-}"
+	[ -n "$runid" ] || die "usage: verify-smile down <runid>"
+	require_manifest "$runid"
+	if [ "$(mf "$runid" state)" = "down" ]; then
+		printf 'evidence kept at %s (already down)\n' "$EVIDENCE_ROOT/$runid"
+		return 0
+	fi
+	local fixture tmp session repo evidence
+	fixture=$(mf "$runid" fixture)
+	tmp=$(mf "$runid" tmp)
+	session=$(mf "$runid" tmux_session)
+	repo=$(mf "$runid" repo)
+	evidence="$EVIDENCE_ROOT/$runid"
+
+	log "collecting evidence into $evidence"
+	if [ -d "$fixture" ]; then
+		[ -d "$fixture/.factory" ] && cp -R "$fixture/.factory" "$evidence/factory"
+		(cd "$fixture" && gh pr list --state all --json number,title,state,headRefName,mergedAt > "$evidence/prs.json" 2>/dev/null) \
+			|| printf '[]\n' > "$evidence/prs.json"
+		(cd "$fixture" && bd list --json > "$evidence/beads.json" 2>/dev/null) \
+			|| printf '[]\n' > "$evidence/beads.json"
+	else
+		log "fixture dir already gone; recording empty prs/beads"
+		printf '[]\n' > "$evidence/prs.json"
+		printf '[]\n' > "$evidence/beads.json"
+	fi
+
+	if tmux has-session -t "$session" 2>/dev/null; then
+		log "killing tmux session $session"
+		tmux kill-session -t "$session"
+	fi
+
+	if [ -d "$tmp" ]; then
+		case "$tmp" in
+			*/smile-verify.*) rm -rf "$tmp" ;;
+			*) die "refusing to remove unexpected tmp path $tmp" ;;
+		esac
+	fi
+
+	local disposal
+	if gh repo delete "$repo" --yes >/dev/null 2>&1; then
+		disposal="deleted"
+	else
+		log "gh repo delete failed (token lacks delete_repo?); renaming then archiving instead"
+		# rename first: an archived repo is read-only and refuses the rename
+		gh repo rename "$(basename "$repo")-trash" --repo "$repo" --yes >/dev/null 2>&1 || true
+		gh repo archive "$repo-trash" --yes >/dev/null 2>&1 || true
+		disposal="archived-renamed"
+		printf 'verify-smile: run `gh auth refresh -h github.com -s delete_repo` to enable true deletion of fixture repos\n'
+	fi
+
+	python3 - "$(manifest_path "$runid")" "$disposal" <<'EOF'
+import json, sys
+p, disposal = sys.argv[1], sys.argv[2]
+m = json.load(open(p))
+m["state"] = "down"
+m["disposal"] = disposal
+json.dump(m, open(p, "w"), indent=2)
+EOF
+	[ -d "$evidence" ] || die "evidence dir vanished: $evidence"
+	printf 'evidence kept at %s\n' "$evidence"
+}
+
+# ---------------------------------------------------------------- list
+cmd_list() {
+	local r
+	for r in $(ls -1 "$EVIDENCE_ROOT" 2>/dev/null | sort); do
+		[ -f "$(manifest_path "$r")" ] || continue
+		printf '%s\t%s\t%s\n' "$r" "$(mf "$r" state)" "$(mf "$r" repo)"
+	done
+}
+
+case "${1:-}" in
+	up) shift; cmd_up "$@" ;;
+	feature) shift; cmd_feature "$@" ;;
+	down) shift; cmd_down "$@" ;;
+	list) shift; cmd_list "$@" ;;
+	*) sed -n '2,9p' "$0"; exit 1 ;;
+esac
