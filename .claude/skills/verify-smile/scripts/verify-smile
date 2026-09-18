@@ -142,6 +142,10 @@ cmd_up() {
 		log "stamping SMILE from $SMILE_REPO@$smile_commit"
 		if python3 "$SMILE_REPO/install.py" "$fixture" > "$EVIDENCE_ROOT/$runid/install-stamp.log" 2>&1; then
 			install_result="stamped"
+			# commit the stamp as a user would; bd init already committed .gitignore, and an
+			# unstaged edit to it makes the stub worker's pull --rebase refuse
+			(cd "$fixture" && git add -A && git commit -q -m "chore: stamp smile" && git push -q origin main)
+			mf_set "$runid" stamp_commit "$(git -C "$fixture" rev-parse HEAD)"
 		else
 			install_result="stamp-failed"
 			log "install.py failed, see $EVIDENCE_ROOT/$runid/install-stamp.log"
