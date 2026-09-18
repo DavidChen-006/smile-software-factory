@@ -180,3 +180,26 @@ Session name: `smile-<basename of SMILE_ROOT>`, overridden by the environment va
 **tmux backend.** `spawn` creates the session detached when it does not exist, otherwise adds a window: `tmux new-window -d -P -F '#{window_id}' -t <session> -n <name> -c <cwd> -- <command> [args...]` (or `new-session -d -P -F '#{window_id}' -s <session> -n <name> -c <cwd> -- ...`). The handle is `tmux:<session>:<window_id>` with the tmux window id (`@N`). The window has `remain-on-exit` off, so it disappears when the command exits. `alive` exits 0 when `tmux list-windows -t "=<session>" -F '#{window_id}'` lists the id and `#{pane_dead}` of its pane is 0. `kill` runs `tmux kill-window -t "<session>:<window_id>"` and ignores a missing window. All `-t` session targets use the `=` exact-match prefix.
 
 The cmux and Herdr backends are specified in S8 against the same verbs and handle grammar.
+
+## 8. Driver (S3)
+
+`smile run [--once] [--interval <seconds>]` is the loop. Default interval 60. `--once` runs one tick and exits. Any other argument is exit 2.
+
+**Factory directory.** From S3 on, every runtime resolves the factory directory as the parent of `git -C "$SMILE_ROOT" rev-parse --path-format=absolute --git-common-dir`, so a linked worktree of the repo writes the same `.factory/` as the main checkout. For a plain checkout that is `$SMILE_ROOT/.factory`. The event log, pause file, pid file, and run state below all live there. Both runtimes update their S1 code to use this resolution; `smile status`, `pause`, `resume`, and `event` run identically from a worktree.
+
+**Singleton.** `.factory/driver.pid` holds the driver's pid. A second `smile run` whose pid file names a live process prints `driver already running (pid <n>)` to stderr and exits 1. A stale pid file is overwritten. The file is removed on exit.
+
+**Start.** The driver appends `campaign.start` with `actor` `driver` and `detail` the interval, then runs ticks until `campaign.complete` or `--once`.
+
+**Tick, in this order.**
+
+1. Reap. For each run state file in `.factory/runs/<bead>.json`: when `smile mux alive <handle>` is 1 and the bead's status is `closed`, run `treehouse return --force <worktree>`, append `pane.reaped` (`bead`, `detail` the handle), and move the state file to `.factory/runs/done/`. When the pane is dead and the bead is not closed, append `worker.crashed` (`bead`, `detail` `attempt <n>`); if `attempts` is 1, respawn per step 3 with `attempts` 2; if `attempts` is 2, append a second `worker.crashed` with `detail` `escalated`, move the state file to `.factory/runs/crashed/`, and leave the bead claimed.
+2. Review. `review_pending()` is a hook point that S4 fills. In S3 it does nothing.
+3. Claim and spawn. When `.factory/pause` exists, skip this step (the pause command already logged `driver.paused`; the driver logs nothing about pausing). Otherwise read `bd ready --json`, and for each bead until the count of live run state files reaches `max_parallel`: claim with `bd update <id> --claim`; append `bead.claimed`; acquire a worktree with `treehouse get --lease --lease-holder <id>` (stdout is the path); append `worktree.acquired` (`detail` the path); write the work order to `.factory/orders/<id>.md` by substituting `{{bead_id}}`, `{{bead_title}}`, `{{bead_description}}` (from `bd show <id> --json`), `{{spec_path}}` (the newest `docs/*SPEC*.md` or `docs/*DESIGN*.md`, else empty), and `{{base_branch}}` in `prompts/worker.md`; mark the worktree trusted (below); spawn with `smile mux spawn <id> <worktree> <command...>`; append `pane.spawned` (`detail` the handle); write `.factory/runs/<id>.json` with keys `bead`, `worktree`, `handle`, `order`, `attempts`, `spawned_at`.
+4. Complete. When `bd list --json` (open, in_progress, blocked) is empty and no run state file is live, append `campaign.complete`, remove the pid file, exit 0.
+
+**Worker command.** Default argv: `claude --model <worker.model> --permission-mode <worker.permission_mode> <order text>` where the order text is the file contents as one argument. When `SMILE_WORKER_CMD` is set and non-empty, its value is split on whitespace into argv and the order path is appended as the last argument. The pane's environment carries `SMILE_BEAD`, `SMILE_BEAD_TITLE`, `SMILE_REPO` (the main checkout, the factory directory's parent), and `SMILE_BASE_BRANCH`, and its working directory is the worktree.
+
+**Trust.** Before spawning, the driver sets `projects["<worktree absolute path>"].hasTrustDialogAccepted` to `true` in `~/.claude.json`, creating the project entry when absent and leaving every other key untouched. Both runtimes may use python3 for this JSON edit. When the file is absent the driver creates it with only that entry.
+
+**Events per bead, in order, in S3 with the stub worker and no review lane:** `bead.claimed`, `worktree.acquired`, `pane.spawned`, then the worker's own `pr.opened` is S4's business; S3 ends at `pane.spawned` and the reap path.

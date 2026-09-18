@@ -85,7 +85,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 ### Spawn owners
 
-- [ ] One fresh agent per spike per runtime, at high effort, with a self-contained brief: the spike section, the contracts it must honor, the standing orders, conventions, file pointers, and the branch name. No inherited chat. David's call after S0: a good brief beats a fork.
+- [ ] One fresh agent per spike per runtime, on Opus 5 at high effort (reviewers stay on the orchestrator's model), with a self-contained brief: the spike section, the contracts it must honor, the standing orders, conventions, file pointers, and the branch name. No inherited chat. David's call after S0: a good brief beats a fork.
 - [ ] Runtime spikes S1 to S4 spawn a bash writer and a Python writer in parallel from the same brief, per the arena skill. Shared runtime-neutral pieces (installer, shim, config format, `docs/RUNTIME-CONTRACT.md`) were written once first, in S1, so the two runtimes implement one contract.
 - [ ] S0, S5 to S9 spawn one writer each. S5 and later target the runtime David picked.
 - [ ] Each writer works on its own branch in an isolated git worktree of this repo. Branch names are `spike/<id>-<runtime>` or `spike/<id>`.
@@ -207,7 +207,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 - [ ] `smile mux alive <handle>` exits 0 while the window exists and its pane's process is running.
 - [ ] `smile mux kill <handle>` kills the window and exits 0 even when it is already gone.
 - [ ] The backend file is selected from `backend` in config, or from the doctor's auto-detect order.
-- [ ] Workers launch with the target folder pre-trusted so no trust prompt appears. The fork finds the setting that does this and records it in Appendix A.
+- [ ] Workers launch with the target folder pre-trusted so no trust prompt appears. The setting is recorded in Appendix A.
 
 **You see.**
 
@@ -241,7 +241,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Build.**
 
 - [ ] `smile run [--once] [--interval N]` holds a singleton pidfile per repo and refuses a second instance.
-- [ ] Each tick, when `.factory/pause` is absent, the driver lists ready beads through `bd ready --json`, claims up to `max_parallel` minus running, acquires a worktree per claim through `treehouse get`, writes the work order from `prompts/worker.md` and the bead, spawns the worker through `smile mux spawn`, and logs `bead.claimed`, `worktree.acquired`, and `pane.spawned`.
+- [ ] Each tick, when `.factory/pause` is absent, the driver lists ready beads through `bd ready --json` and claims with `bd update <id> --claim`, claims up to `max_parallel` minus running, acquires a worktree per claim through `treehouse get`, writes the work order from `prompts/worker.md` and the bead, spawns the worker through `smile mux spawn`, and logs `bead.claimed`, `worktree.acquired`, and `pane.spawned`.
 - [ ] Each tick the driver reaps panes whose bead is closed, returns their worktree through `treehouse return`, and logs `pane.reaped`.
 - [ ] A pane that dies with its bead still open is logged `worker.crashed`. The bead is respawned once. A second crash leaves the bead claimed and logs an escalation.
 - [ ] The worker command is `claude --model <worker.model> --permission-mode <worker.permission_mode> "<work order>"` by default and `SMILE_WORKER_CMD` when set, which the harness uses for the stub. Before spawning, the driver marks the worktree path trusted in `~/.claude.json`.
@@ -323,7 +323,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] The watchtower pane runs claude with the watchtower skill, tails `events.jsonl`, and writes its report to `.factory/watch.md`.
 - [ ] It appends `watch.escalation` events with a reason and may create `.factory/pause`. It never edits code, bd, or GitHub.
-- [ ] The driver logs `driver.paused` on the first tick it sees the pause file and `driver.resumed` when it is gone.
+- [ ] `smile pause` and `smile resume` log `driver.paused` and `driver.resumed`; the driver itself logs nothing about pausing and only skips claims while the file exists.
 
 **You see.**
 
@@ -424,7 +424,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Build.**
 
 - [ ] The cmux backend spawns a pane in a workspace named after the repo, passing `--workspace` on close as the 2026-07-20 finding requires.
-- [ ] The Herdr backend spawns a tab through the Herdr CLI. The fork prototypes the exact commands first and records them in Appendix A.
+- [ ] The Herdr backend spawns a tab through the Herdr CLI. The writer prototypes the exact commands first and records them in Appendix A.
 
 **You see.**
 
@@ -508,8 +508,8 @@ Open questions each fork settles by running something before building on it. Ans
 
 ## Appendix C. Risks
 
-- Treehouse pooling and worktree hooks are untested together. Lands in S3. The fork watches for a stale pool entry keeping a worker's branch checked out.
-- Herdr tab control is known only from its README. Lands in S8. The fork prototypes first.
+- Treehouse pooling and worktree hooks are untested together. Lands in S3. The writer watches for a stale pool entry keeping a worker's branch checked out.
+- Herdr tab control is known only from its README. Lands in S8. The writer prototypes first.
 - The real reviewer on a trivial diff may still take minutes. Lands in S4. The stub reviewer keeps the loop fast and the real one runs in a single lane.
 - Two runtimes double the writer cost through S4. Accepted by David for the bakeoff.
 - GitHub repo creation and deletion in David's account per verify run. Names carry the `smile-verify-` prefix and the cleanup asserts deletion.
