@@ -158,3 +158,25 @@ When `bd init` or `treehouse init` fails, init prints one stderr line, exits 1, 
 `python3 install.py <target-repo> [--force]` at the SMILE repo root, stdlib only. It copies the `templates/` tree into the target, preserving relative paths and file modes, skipping `__pycache__/` and `.DS_Store`. One stdout line per file, sorted by path components: `stamped <path>` (new), `unchanged <path>` (byte-identical; mode re-applied), `drifted <path>, use --force` (differs, left alone), `replaced <path>` (differs, `--force`), or `drifted <path>, symlink` (the destination is a symlink; counted as drift even with `--force`, never written through). A template that is itself a symlink is skipped with one stderr line. Then one line for `.gitignore`: `appended .gitignore` when it added `.factory/`, `unchanged .gitignore` when the line was present. Exit 1 when any file drifted without `--force` or on an I/O error (one stderr line), 2 on usage error, else 0. It touches nothing outside the templates image plus `.gitignore`.
 
 The runtime writers add their files under `templates/smile/bash/` and `templates/smile/py/`; the installer picks them up with no change. Executable bits are taken from the file mode in the checkout, so `chmod +x` the bash command files and commit the mode.
+
+## 7. Mux seam (S2)
+
+The driver spawns and reaps panes only through `smile mux`. One backend file per pane tool implements three verbs. The backend for `spawn` comes from the config key `backend`, or auto-detect in the order tmux, cmux, herdr when it is empty. The backend for `alive` and `kill` comes from the handle, never from config, so a pane can be killed after the config changes.
+
+| command | stdout | exit |
+| --- | --- | --- |
+| `smile mux spawn <name> <cwd> <command> [args...]` | The handle, one line. | 0; 1 when the backend is missing or the tool refuses, with one stderr line; 2 usage. |
+| `smile mux alive <handle>` | Nothing. | 0 while the pane exists and its process has not exited; 1 otherwise; 2 malformed handle or unknown backend. |
+| `smile mux kill <handle>` | Nothing. | 0, also when the pane is already gone; 2 malformed handle or unknown backend. |
+
+Handle grammar: `<backend>:<rest>`, where `<backend>` is `tmux`, `cmux`, or `herdr` and `<rest>` is opaque to the caller. A handle is a single line with no spaces.
+
+Backend layout: bash `smile/bash/mux.d/<backend>` (sourced by `smile/bash/mux`), Python `smile/py/backends/<backend>.py`. A backend named in config or in a handle that has no file is `unknown backend <name>`, exit 2.
+
+The spawned command runs with `<cwd>` as its working directory and inherits the caller's environment. `<command>` and its args are passed to the tool as one argv, never re-joined through a shell, so spaces in arguments survive. `<name>` labels the pane for humans; it need not be unique.
+
+Session name: `smile-<basename of SMILE_ROOT>`, overridden by the environment variable `SMILE_MUX_SESSION` when set and non-empty (the verification harness sets it to its own session).
+
+**tmux backend.** `spawn` creates the session detached when it does not exist, otherwise adds a window: `tmux new-window -d -P -F '#{window_id}' -t <session> -n <name> -c <cwd> -- <command> [args...]` (or `new-session -d -P -F '#{window_id}' -s <session> -n <name> -c <cwd> -- ...`). The handle is `tmux:<session>:<window_id>` with the tmux window id (`@N`). The window has `remain-on-exit` off, so it disappears when the command exits. `alive` exits 0 when `tmux list-windows -t "=<session>" -F '#{window_id}'` lists the id and `#{pane_dead}` of its pane is 0. `kill` runs `tmux kill-window -t "<session>:<window_id>"` and ignores a missing window. All `-t` session targets use the `=` exact-match prefix.
+
+The cmux and Herdr backends are specified in S8 against the same verbs and handle grammar.
