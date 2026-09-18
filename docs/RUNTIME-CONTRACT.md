@@ -66,11 +66,11 @@ Keys, always present, in this order: `ts`, `event`, `bead`, `pr`, `sha`, `actor`
 | `actor` | string or null | Who caused it. Conventions: `driver`, `worker`, `reviewer`, `watchtower`, `human`. |
 | `detail` | string or null | Free text. Keep it short; see the line-size rule. |
 
-Encoding: Python `json.dumps(obj, separators=(",", ":"), ensure_ascii=False)`. Escape exactly `"` as `\"`, `\` as `\\`, U+0008/0009/000A/000C/000D as `\b \t \n \f \r`, every other code point below U+0020 as `\u00XX` with lowercase hex; escape nothing else, including `/` and U+007F; write UTF-8. Both runtimes must produce byte-identical lines for the same inputs and timestamp. Example:
+Encoding: Python `json.dumps(obj, separators=(",", ":"), ensure_ascii=False)`. Escape exactly `"` as `\"`, `\` as `\\`, U+0008/0009/000A/000C/000D as `\b \t \n \f \r`, every other code point below U+0020 as `\u00XX` with lowercase hex; escape nothing else, including `/` and U+007F; write UTF-8. Both runtimes must produce byte-identical lines for the same inputs and timestamp. Invalid UTF-8 bytes in an argument or in the config file pass through unchanged (Python: `surrogateescape` on decode and encode). Example:
 
 	{"ts":"2026-09-18T06:39:00Z","event":"bead.claimed","bead":"sv-1","pr":null,"sha":null,"actor":"driver","detail":"tick 3"}
 
-Append rule: write the whole line, including the trailing newline, in a single write call, so concurrent appenders never interleave. Python: `os.write` on a fd opened `O_WRONLY|O_APPEND|O_CREAT`. Bash: a single `printf '%s\n' "$line" >> file`. Lines must stay under 4096 bytes (POSIX `PIPE_BUF`); a line that would exceed 4096 bytes has `detail` truncated until it fits. Never rewrite or truncate the file. Create `.factory/` and the file if absent.
+Append rule: open the file in append mode and write the whole line, including the trailing newline, in one call. Python: `os.write` on a fd opened `O_WRONLY|O_APPEND|O_CREAT`. Bash: a single `printf '%s\n' "$line" >> file`. A line including its trailing newline is at most 4096 bytes (POSIX `PIPE_BUF`). When the line would be longer, `detail` is cut to the longest prefix of code points for which the encoded line fits; the cut never splits a UTF-8 sequence. When the other six fields alone exceed the limit the line is written as is. Never rewrite or truncate the file. Create `.factory/` and the file if absent.
 
 The seventeen event names, from the spec's "The bus":
 
@@ -113,7 +113,7 @@ The mux check honors `backend` from config: when set, only that backend is check
 
 **init.** Each step creates its thing only when absent and prints `created <thing>` or `exists <thing>`.
 
-1. `.beads`: when `$SMILE_ROOT/.beads/` is absent, run `BD_NON_INTERACTIVE=1 bd init --prefix <p> -q` in `$SMILE_ROOT`, where `<p>` is the basename ASCII-lowercased with every character outside `[a-z0-9]` removed, then the first two characters; fewer than two characters left: `sm`.
+1. `.beads`: when `$SMILE_ROOT/.beads/` is absent, run (note: bd 1.0.5 also writes `CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`, `.agents/`, and `.codex/` into the repo and prints about twenty lines even with `-q`; the runtime discards that stdout and leaves those files alone) `BD_NON_INTERACTIVE=1 bd init --prefix <p> -q` in `$SMILE_ROOT`, where `<p>` is the basename ASCII-lowercased with every character outside `[a-z0-9]` removed, then the first two characters; fewer than two characters left: `sm`.
 2. `treehouse.toml`: when absent, run `treehouse init` in `$SMILE_ROOT` (it requires a git repo and writes `treehouse.toml` there). Discard its stdout.
 3. `.worktreeinclude`: when absent, write exactly `.env\nsmile.config.yaml\n`.
 4. `.factory`: `mkdir` when absent.
@@ -125,7 +125,7 @@ When `bd init` or `treehouse init` fails, init prints one stderr line, exits 1, 
 
 **config get.** Parse per section 2. The lookup order is file value, then default. Both runtimes carry the same defaults table as section 2; the template file is not the source of defaults at runtime.
 
-**pause and resume.** The events carry `actor` from `$SMILE_ACTOR` when set, else `human`, and `detail` null. Everything else null.
+**pause and resume.** The events carry `actor` from `$SMILE_ACTOR` when it is set and non-empty, else `human`, and `detail` null. Everything else null.
 
 **status.** Three sections, each a heading line ending in `:` followed by indented lines (two spaces).
 
