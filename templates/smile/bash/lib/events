@@ -1,0 +1,55 @@
+# lib/events: append one line to .factory/events.jsonl (docs/RUNTIME-CONTRACT.md section 3).
+# Sourced, never run.
+
+# the seventeen names, space-delimited on one line so `*" $name "*` matches every one
+EVENT_NAMES=' campaign.start bead.claimed worktree.acquired pane.spawned pr.opened review.started review.verdict issue.opened issue.resolved pr.merged bead.closed pane.reaped worker.crashed watch.escalation driver.paused driver.resumed campaign.complete '
+
+# json_str <var> <text>: set <var> to <text> as a JSON string literal, escaped per the contract:
+# only \ " and code points below U+0020; everything else, including / and U+007F, passes through.
+json_str() {
+	local s="$2" h c
+	s="${s//\\/\\\\}"
+	s="${s//\"/\\\"}"
+	s="${s//$'\b'/\\b}"; s="${s//$'\t'/\\t}"; s="${s//$'\n'/\\n}"; s="${s//$'\f'/\\f}"; s="${s//$'\r'/\\r}"
+	case "$s" in *[[:cntrl:]]*)
+		for h in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f; do
+			printf -v c "\\x$h"; s="${s//$c/\\u00$h}"
+		done ;;
+	esac
+	printf -v "$1" '"%s"' "$s"
+}
+
+# bytelen <var> <text>: set <var> to the byte length of <text> (${#} counts characters otherwise)
+bytelen() { local LC_ALL=C; printf -v "$1" '%s' "${#2}"; }
+
+# event_append <name> [bead=<id>] [pr=<n>] [sha=<s>] [actor=<a>] [detail=<text>]
+# Validates the arguments as `smile event` does (return 2 with one stderr line), then appends one
+# line in one write. Unset fields are null; `detail` is cut until the line stays under 4096 bytes.
+event_append() {
+	local name="$1" tok key value seen=' ' bead=null pr=null sha=null actor=null detail=null raw='' ts line n
+	shift
+	case "$EVENT_NAMES" in *" $name "*) ;; *) printf 'smile event: unknown event %s\n' "$name" >&2; return 2 ;; esac
+	for tok in "$@"; do
+		key="${tok%%=*}"; value="${tok#*=}"
+		case "$tok" in bead=*|pr=*|sha=*|actor=*|detail=*) ;; *) printf 'smile event: bad argument %s\n' "$tok" >&2; return 2 ;; esac
+		case "$seen" in *" $key "*) printf 'smile event: duplicate key %s\n' "$key" >&2; return 2 ;; esac
+		seen="$seen$key "
+		if [ "$key" = pr ]; then
+			[[ $value =~ ^[1-9][0-9]*$ ]] || { printf 'smile event: pr must be a positive integer, got "%s"\n' "$value" >&2; return 2; }
+			pr="$value"
+		else
+			json_str "$key" "$value"
+		fi
+		[ "$key" != detail ] || raw="$value"
+	done
+	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	while :; do
+		line="{\"ts\":\"$ts\",\"event\":\"$name\",\"bead\":$bead,\"pr\":$pr,\"sha\":$sha,\"actor\":$actor,\"detail\":$detail}"
+		bytelen n "$line"
+		[ "$n" -gt 4095 ] && [ -n "$raw" ] || break
+		raw="${raw:0:$(( ${#raw} > n - 4095 ? ${#raw} - n + 4095 : 0 ))}"
+		json_str detail "$raw"
+	done
+	mkdir -p "$SMILE_ROOT/.factory"
+	printf '%s\n' "$line" >> "$SMILE_ROOT/.factory/events.jsonl"
+}
