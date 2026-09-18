@@ -312,6 +312,14 @@ class StatusTest(RepoCase):
         self.assertEqual(shown[0], "  [1,2]")
         self.assertEqual(shown[-1], "  t campaign.complete - - last")
 
+    def test_corrupt_line_keeps_its_own_cr(self) -> None:
+        # only the trailing newline is stripped: a CRLF line renders with its CR (contract section 4, status)
+        repo = make_repo()
+        self.addCleanup(shutil.rmtree, os.path.dirname(repo), ignore_errors=True)
+        Path(repo, ".factory").mkdir()
+        Path(repo, ".factory/events.jsonl").write_bytes(b"not json\r\n")
+        self.assertTrue(smile(repo, "status").stdout.endswith(b"events:\n  not json\r\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

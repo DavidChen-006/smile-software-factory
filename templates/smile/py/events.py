@@ -36,9 +36,12 @@ def append(root: str, event: str, bead: str | None = None, pr: int | None = None
 
 
 def tail(root: str, n: int) -> list[str]:
-    """The last n lines of the log, oldest first, raw; [] when the log is missing or empty."""
+    """The last n lines of the log, oldest first, raw; [] when the log is missing or empty.
+
+    newline="" keeps a corrupt line's own CR: only the trailing newline is stripped, nothing is translated.
+    """
     try:
-        with open(f"{root}/.factory/events.jsonl", encoding="utf-8", errors="surrogateescape") as f:
+        with open(f"{root}/.factory/events.jsonl", encoding="utf-8", errors="surrogateescape", newline="") as f:
             lines = f.read().split("\n")
     except FileNotFoundError:
         return []

@@ -13,14 +13,13 @@ from collections import Counter
 sys.dont_write_bytecode = True  # no __pycache__ in the stamped repo; set before the modules beside this file load
 import config
 import events
+import mux
 
-BACKENDS = ("tmux", "cmux", "herdr")
+# one Usage for the whole runtime; mux.py owns it because this file runs as __main__ and cannot be imported back
+from mux import Usage
+
 EVENT_FIELDS = ("bead", "pr", "sha", "actor", "detail")
 TOOL_ENV = {**os.environ, "BD_NON_INTERACTIVE": "1"}
-
-
-class Usage(Exception):
-    """Bad arguments: one stderr line, exit 2."""
 
 
 def no_args(args: list[str]) -> None:
@@ -54,11 +53,11 @@ def gh_auth() -> str:
     return "ok gh-auth" if rc == 0 else "missing gh-auth gh auth status failed"
 
 
-def mux(backend: str) -> str:
+def mux_line(backend: str) -> str:
     if backend == "":
-        found = next((b for b in BACKENDS if shutil.which(b)), None)
+        found = next((b for b in mux.BACKENDS if shutil.which(b)), None)
         return f"ok mux {found}" if found else "missing mux none of tmux, cmux, herdr on PATH"
-    if backend not in BACKENDS:
+    if backend not in mux.BACKENDS:
         return f"missing mux unknown backend {backend}"
     return f"ok mux {backend}" if shutil.which(backend) else f"missing mux {backend} not on PATH"
 
@@ -66,7 +65,7 @@ def mux(backend: str) -> str:
 def cmd_doctor(root: str, args: list[str]) -> int:
     no_args(args)
     lines = [on_path("git"), on_path("gh"), gh_auth(), on_path("claude"), on_path("bd"), on_path("treehouse"),
-             mux(config.get(root, "backend"))]
+             mux_line(config.get(root, "backend"))]
     print("\n".join(lines))
     return 1 if any(line.startswith("missing ") for line in lines) else 0
 
@@ -204,6 +203,7 @@ COMMANDS = {
     "pause": cmd_pause,
     "resume": cmd_resume,
     "status": cmd_status,
+    "mux": mux.cmd_mux,
 }
 
 
