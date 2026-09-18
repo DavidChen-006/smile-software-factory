@@ -62,6 +62,10 @@ The two stubs under `scripts/` let a run exercise the loop without spending mode
 
 - `stub-worker` replaces the worker pane. The driver launches it with `SMILE_WORKER_CMD`. It
   commits one file on `smile/<bead>`, pushes, and opens a PR with the trailer `Bead: <bead>`.
+  Run again while that PR is open, it looks for open issues labeled `review` whose body has a
+  line `PR: #<n>` naming the PR, appends a line, commits `fix: address review` with one
+  `addresses #<issue>` body line per issue, and pushes. With no such issue it exits 4. The
+  `PR: #<n>` line is the contract the review lane honors when it opens finding issues.
   `SMILE_STUB_CRASH_BEADS="<id>"` makes it exit 3 for that bead, `SMILE_STUB_CRASH_TIMES` times.
 - `stub-reviewer` replaces the headless reviewer. The review lane launches it with
   `SMILE_REVIEW_CMD`, prompt on stdin. It prints `Verdict: APPROVE`. With
@@ -91,7 +95,13 @@ created, removes only its own temp directory, and deletes the repo with
 enables deletion. Evidence survives. `down` prints `evidence kept at <dir>` and is safe to run
 twice. It refuses a runid with no manifest.
 
-Leftover `-trash` repos are safe to delete by hand once the scope is granted.
+`verify-smile gc --dry-run` lists leftover `smile-verify-*-trash` repos. Without the flag it deletes
+them when the token has `delete_repo`, and otherwise prints the count and the refresh command.
+
+A failed `up` tears itself down from what its manifest already records, so a run whose manifest
+says `state: down` with a `stage` before `stamp` was a failed launch, not a driven fixture. `down`
+refuses to mark a run down until the repo is gone or renamed and archived, so a partial
+teardown stays retryable.
 
 ## Helpers
 
