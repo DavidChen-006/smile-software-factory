@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# smile run [--once] [--interval <seconds>]: the driver loop (docs/RUNTIME-CONTRACT.md section 8).
+#
+# Each tick, in order: reap finished or crashed panes, run the review hook (S4 fills it), claim
+# ready beads up to max_parallel and spawn one worker pane each, then finish the campaign when
+# nothing is open and nothing is live.
+#
+# All state is files under the factory directory: the event log, .factory/pause, driver.pid, and
+# one run state file per live bead at runs/<bead>.json. Nothing is held only in memory, so a
+# driver that dies mid-campaign picks the same state up on the next start.
+#
+# Panes are opened and closed only through `smile mux`, never by talking to tmux; bd runs
+# non-interactive; python3 does the JSON reading and writing and nothing else.
+set -euo pipefail
+. "$SMILE_ROOT/smile/bash/lib/config"
+. "$SMILE_ROOT/smile/bash/lib/events"    # sources lib/worktree, which sets SMILE_FACTORY
+
+usage() { printf 'usage: smile run [--once] [--interval <seconds>]\n' >&2; exit 2; }
+
+interval=60
+once=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--once) once=1 ;;
+		--interval) [ $# -ge 2 ] || usage; interval="$2"; shift
+			case "$interval" in ''|*[!0-9]*) usage ;; esac ;;
+		*) usage ;;
+	esac
+	shift
+done
+
+SMILE="$SMILE_ROOT/smile/smile"
+REPO=$(dirname "$SMILE_FACTORY")          # the main checkout, whatever worktree this ran from
+RUNS="$SMILE_FACTORY/runs"
+ORDERS="$SMILE_FACTORY/orders"
+PIDFILE="$SMILE_FACTORY/driver.pid"
+cd "$REPO"                                # bd, treehouse, and gh all read the main checkout
+BASE_BRANCH=$(config_get base_branch)
+MAX_PARALLEL=$(config_get max_parallel)
+TICK_BEADS=""                             # this tick's "<id> <status>" snapshot, set by bd_snapshot
+
+warn() { printf 'smile run: %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------- bd
+bd_json() { BD_NON_INTERACTIVE=1 bd "$@" --json 2>/dev/null; }
+
+# bd_snapshot: this tick's bead statuses, one "<id> <status>" line each, read once per tick so a
+# tick's decisions are all made against the same picture.
+bd_snapshot() {
+	TICK_BEADS=$(bd_json list --all | python3 -c '
+import json, sys
+for b in json.load(sys.stdin):
+    print(b["id"], b["status"])' 2>/dev/null) || TICK_BEADS=""
+}
+
+bead_status() { printf '%s\n' "$TICK_BEADS" | sed -n "s/^$1 //p"; }
+
+# open_beads: how many beads are open, in_progress, or blocked right now (step 4 asks bd again,
+# because this tick's claims and the workers' closes both changed it).
+open_beads() {
+	bd_json list | python3 -c '
+import json, sys
+print(sum(1 for b in json.load(sys.stdin) if b["status"] in ("open", "in_progress", "blocked")))' 2>/dev/null \
+		|| printf '1\n'   # bd unreadable: assume work remains rather than declare the campaign done
+}
+
+ready_beads() {
+	bd_json ready | python3 -c '
+import json, sys
+for b in json.load(sys.stdin):
+    print(b["id"])' 2>/dev/null || true
+}
+
+bead_title() {
+	bd_json show "$1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)[0].get("title", ""))' 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- run state
+# One file per live bead, keys bead, worktree, handle, order, attempts, spawned_at. Live runs sit
+# in runs/, finished ones in runs/done/, escalated ones in runs/crashed/, so counting live runs is
+# counting one directory.
+run_write() {   # run_write <bead> <worktree> <handle> <order> <attempts>
+	python3 - "$RUNS/$1.json" "$@" <<'EOF'
+import json, os, sys, time
+path, bead, worktree, handle, order, attempts = sys.argv[1:7]
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump({"bead": bead, "worktree": worktree, "handle": handle, "order": order,
+               "attempts": int(attempts), "spawned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
+os.replace(tmp, path)
+EOF
+}
+
+# run_read <file>: set run_bead, run_worktree, run_handle, run_order, run_attempts. A file that
+# does not parse is skipped by the caller (return 1), never guessed at.
+run_read() {
+	local fields
+	fields=$(python3 - "$1" <<'EOF'
+import json, sys
+r = json.load(open(sys.argv[1]))
+print("\t".join(str(r[k]) for k in ("bead", "worktree", "handle", "order", "attempts")))
+EOF
+	) || return 1
+	IFS=$'\t' read -r run_bead run_worktree run_handle run_order run_attempts <<<"$fields"
+}
+
+live_runs() { ls "$RUNS"/*.json 2>/dev/null | grep -c '' || true; }
+
+# ---------------------------------------------------------------- spawning
+# trust_worktree <path>: pre-accept the trust dialog for a worktree so a headless claude does not
+# block on it. Every other key of ~/.claude.json is read and written back untouched.
+trust_worktree() {
+	python3 - "$HOME/.claude.json" "$1" <<'EOF'
+import json, os, sys
+path, worktree = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+projects = data.get("projects")
+if not isinstance(projects, dict):
+    projects = data["projects"] = {}
+entry = projects.get(worktree)
+if not isinstance(entry, dict):
+    entry = projects[worktree] = {}
+entry["hasTrustDialogAccepted"] = True
+tmp = path + ".smile.tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, path)
+EOF
+}
+
+# write_order <bead> <title>: render prompts/worker.md into orders/<bead>.md, printing the path.
+# The spec path is relative to the repo root, so it also resolves inside the worker's worktree.
+write_order() {
+	local spec f best=""
+	for f in "$REPO"/docs/*SPEC*.md "$REPO"/docs/*DESIGN*.md; do
+		[ -f "$f" ] || continue
+		if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
+	done
+	spec=${best:+docs/$(basename "$best")}
+	python3 - "$REPO/prompts/worker.md" "$ORDERS/$1.md" "$1" "$2" "$(bead_description "$1")" "$spec" "$BASE_BRANCH" <<'EOF'
+import sys
+src, dst, bead, title, description, spec, base = sys.argv[1:8]
+text = open(src, encoding="utf-8").read()
+for key, value in (("bead_id", bead), ("bead_title", title), ("bead_description", description),
+                   ("spec_path", spec), ("base_branch", base)):
+    text = text.replace("{{%s}}" % key, value)
+open(dst, "w", encoding="utf-8").write(text)
+EOF
+	printf '%s\n' "$ORDERS/$1.md"
+}
+
+bead_description() {
+	bd_json show "$1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)[0].get("description") or "")' 2>/dev/null || true
+}
+
+# spawn_worker <bead> <worktree> <order> <title>: open the pane and print its handle.
+# The four contract variables are put on the command line through `env` rather than exported,
+# because a pane tool hands the window the session's environment, not the driver's.
+spawn_worker() {
+	local bead="$1" worktree="$2" order="$3" title="$4"
+	set -- env "SMILE_BEAD=$bead" "SMILE_BEAD_TITLE=$title" "SMILE_REPO=$REPO" "SMILE_BASE_BRANCH=$BASE_BRANCH"
+	if [ -n "${SMILE_WORKER_CMD:-}" ]; then
+		set -- "$@" ${SMILE_WORKER_CMD} "$order"      # unquoted: the contract splits it on whitespace
+	else
+		set -- "$@" claude --model "$(config_get worker.model)" \
+			--permission-mode "$(config_get worker.permission_mode)" "$(cat "$order")"
+	fi
+	"$SMILE" mux spawn "$bead" "$worktree" "$@"
+}
+
+# ---------------------------------------------------------------- tick, step 1: reap
+reap_runs() {
+	local f
+	for f in "$RUNS"/*.json; do
+		[ -f "$f" ] || continue
+		run_read "$f" || { warn "unreadable run state $f"; continue; }
+		"$SMILE" mux alive "$run_handle" >/dev/null 2>&1 && continue    # still working
+		if [ "$(bead_status "$run_bead")" = closed ]; then
+			"$SMILE" mux kill "$run_handle" >/dev/null 2>&1 || true     # a dead window left by remain-on-exit on
+			treehouse return --force "$run_worktree" >/dev/null 2>&1 || warn "treehouse return $run_worktree failed"
+			event_append pane.reaped bead="$run_bead" actor=driver "detail=$run_handle"
+			mv "$f" "$RUNS/done/"
+		else
+			reap_crashed "$f"
+		fi
+	done
+}
+
+# reap_crashed <file>: the pane died with the bead still open. One respawn, then escalate and
+# leave the bead claimed for a human.
+reap_crashed() {
+	local handle title
+	event_append worker.crashed bead="$run_bead" actor=driver "detail=attempt $run_attempts"
+	if [ "$run_attempts" -ge 2 ]; then
+		event_append worker.crashed bead="$run_bead" actor=driver detail=escalated
+		mv "$1" "$RUNS/crashed/"
+		return 0
+	fi
+	title=$(bead_title "$run_bead")
+	handle=$(spawn_worker "$run_bead" "$run_worktree" "$run_order" "$title") \
+		|| { warn "respawn of $run_bead failed"; return 0; }
+	event_append pane.spawned bead="$run_bead" actor=driver "detail=$handle"
+	run_write "$run_bead" "$run_worktree" "$handle" "$run_order" 2
+}
+
+# ---------------------------------------------------------------- tick, step 2: review
+# review_pending: the hook S4 fills with the review lane. In S3 it does nothing.
+review_pending() { :; }
+
+# ---------------------------------------------------------------- tick, step 3: claim and spawn
+claim_ready() {
+	local id title order worktree handle
+	for id in $(ready_beads); do
+		[ "$(live_runs)" -lt "$MAX_PARALLEL" ] || break
+		BD_NON_INTERACTIVE=1 bd update "$id" --claim >/dev/null 2>&1 \
+			|| { warn "claim of $id failed"; continue; }
+		event_append bead.claimed bead="$id" actor=driver
+		worktree=$(treehouse get --lease --lease-holder "$id" 2>/dev/null) \
+			|| { warn "treehouse get for $id failed"; continue; }
+		event_append worktree.acquired bead="$id" actor=driver "detail=$worktree"
+		title=$(bead_title "$id")
+		order=$(write_order "$id" "$title")
+		trust_worktree "$worktree"
+		if ! handle=$(spawn_worker "$id" "$worktree" "$order" "$title"); then
+			warn "spawn for $id failed"
+			treehouse return --force "$worktree" >/dev/null 2>&1 || true
+			continue
+		fi
+		event_append pane.spawned bead="$id" actor=driver "detail=$handle"
+		run_write "$id" "$worktree" "$handle" "$order" 1
+	done
+}
+
+# ---------------------------------------------------------------- tick
+tick() {
+	bd_snapshot
+	reap_runs
+	review_pending
+	# Pausing is the pause command's event to log, not the driver's; the driver just stops claiming.
+	[ -e "$SMILE_FACTORY/pause" ] || claim_ready
+	if [ "$(open_beads)" -eq 0 ] && [ "$(live_runs)" -eq 0 ]; then
+		event_append campaign.complete actor=driver
+		exit 0
+	fi
+}
+
+# ---------------------------------------------------------------- singleton and loop
+if [ -f "$PIDFILE" ]; then
+	pid=$(cat "$PIDFILE" 2>/dev/null) || pid=
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		printf 'driver already running (pid %s)\n' "$pid" >&2
+		exit 1
+	fi
+fi
+mkdir -p "$RUNS/done" "$RUNS/crashed" "$ORDERS"
+printf '%s\n' "$$" > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT          # installed only once this driver owns the file
+
+event_append campaign.start actor=driver "detail=interval $interval"
+while :; do
+	tick
+	[ "$once" -eq 0 ] || break
+	sleep "$interval"
+done

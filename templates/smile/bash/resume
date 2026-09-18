@@ -5,7 +5,7 @@
 set -euo pipefail
 . "$SMILE_ROOT/smile/bash/lib/events"
 [ $# -eq 0 ] || { printf 'usage: smile resume\n' >&2; exit 2; }
-if rm "$SMILE_ROOT/.factory/pause" 2>/dev/null; then
+if rm "$SMILE_FACTORY/pause" 2>/dev/null; then
 	event_append driver.resumed "actor=${SMILE_ACTOR:-human}"
 	printf 'resumed\n'
 else

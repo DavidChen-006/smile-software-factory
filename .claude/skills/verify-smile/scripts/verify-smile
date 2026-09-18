@@ -192,7 +192,8 @@ cmd_feature() {
 			install) feature_install "$runid" "$fixture" "$runtime" ;;
 			doctor) feature_doctor "$runid" "$fixture" "$runtime" ;;
 			mux) feature_mux "$runid" "$fixture" "$runtime" "$backend" ;;
-			loop|review|gate|watchtower|narrate)
+			loop) feature_loop "$runid" "$fixture" "$runtime" ;;
+			review|gate|watchtower|narrate)
 				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
 				exit 2 ;;
 			*) die "unknown feature '$name'; see features/README.md" ;;
@@ -306,6 +307,121 @@ feature_mux() {
 	printf 'second kill of %s exited 0\n' "$h"
 	printf 'PASS mux (runtime=%s)\n' "$runtime"
 }
+
+# feature_loop: drive the driver through one claim tick and one reap tick with the stub worker.
+# S3 scope: claim, worktree, pane, the workers' PRs, then reap and campaign.complete. The review
+# lane, the merges, and the bead closes the driver does itself land in S4; here the feature closes
+# the beads with `bd close` to stand in for them.
+#
+# The driver runs with HOME pointed at the run's evidence directory, because it writes the trust
+# flag into ~/.claude.json and treehouse pools its worktrees under $HOME; gh and git keep the real
+# config through GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, so the fixture repo is still reachable.
+feature_loop() {
+	local runid="$1" fixture="$2" runtime="$3"
+	local smile session home gh_cfg git_cfg log bead_a bead_b bead_c ready
+	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL loop: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	smile="$fixture/smile/smile"
+	case "$runtime" in
+		bash) [ -x "$fixture/smile/bash/run" ] || { printf 'NOT IMPLEMENTED loop (no smile/bash/run stamped)\n'; exit 2; } ;;
+		py) [ -f "$fixture/smile/py/run.py" ] || { printf 'NOT IMPLEMENTED loop (no smile/py/run stamped)\n'; exit 2; } ;;
+	esac
+
+	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml"
+	rm -f "$fixture/smile.config.yaml.bak"
+	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
+
+	# `up` seeds bd itself; the driver also needs the treehouse pool and .factory, which is what a
+	# user gets from `smile init`. It is idempotent, so a fixture already initialized is untouched.
+	"$smile" init || { printf 'FAIL loop: smile init exited %s\n' "$?"; return 1; }
+	git -C "$fixture" add -A
+	git -C "$fixture" diff --cached --quiet || git -C "$fixture" commit -qm "chore: smile init"
+
+	session=$(mf "$runid" tmux_session)
+	tmux has-session -t "=$session" 2>/dev/null || { printf 'FAIL loop: tmux session %s missing\n' "$session"; return 1; }
+	home="$EVIDENCE_ROOT/$runid/home"
+	gh_cfg="${GH_CONFIG_DIR:-$HOME/.config/gh}"
+	git_cfg="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}"
+	mkdir -p "$home"
+	# git's osxkeychain credential helper finds the login keychain under $HOME, so a scratch HOME
+	# with nothing linked cannot fetch from GitHub. Linking Library keeps the credentials reachable
+	# while ~/.claude.json and the treehouse pool stay inside the evidence directory.
+	[ -e "$home/Library" ] || [ ! -d "$HOME/Library" ] || ln -s "$HOME/Library" "$home/Library"
+	log="$fixture/.factory/events.jsonl"
+
+	# bead A is ready and bead B is blocked by it, so one more independent bead gives the tick
+	# exactly two claimable beads.
+	bead_a=$(mf "$runid" bead_a)
+	bead_b=$(mf "$runid" bead_b)
+	bead_c=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd create "bead C: add a third file" --silent)
+	ready=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd ready --json | python3 -c 'import json,sys; print(" ".join(sorted(i["id"] for i in json.load(sys.stdin))))')
+	printf 'beads: a=%s b=%s c=%s ready=[%s]\n' "$bead_a" "$bead_b" "$bead_c" "$ready"
+	[ "$ready" = "$(printf '%s\n%s\n' "$bead_a" "$bead_c" | sort | tr '\n' ' ' | sed 's/ $//')" ] \
+		|| { printf 'FAIL loop: expected A and C ready, got [%s]\n' "$ready"; return 1; }
+
+	loop_drive() {
+		env HOME="$home" GH_CONFIG_DIR="$gh_cfg" GIT_CONFIG_GLOBAL="$git_cfg" \
+			SMILE_MUX_SESSION="$session" SMILE_WORKER_CMD="$SCRIPT_DIR/stub-worker" \
+			"$smile" run "$@"
+	}
+	# loop_events <bead> <event>: how many such events the log holds for that bead
+	loop_events() {
+		python3 -c '
+import json, sys
+print(sum(1 for o in map(json.loads, open(sys.argv[1])) if o["bead"] == sys.argv[2] and o["event"] == sys.argv[3]))' \
+			"$log" "$1" "$2" 2>/dev/null || printf '0\n'
+	}
+	# loop_prs <bead>...: how many open PRs carry a `Bead: <id>` trailer for one of these beads
+	loop_prs() {
+		(cd "$fixture" && gh pr list --state open --limit 50 --json number,body) | python3 -c '
+import json, sys
+ids = set(sys.argv[1:])
+print(sum(1 for pr in json.load(sys.stdin)
+          if ids & {l.strip()[6:] for l in pr["body"].splitlines() if l.strip().startswith("Bead: ")}))' "$@"
+	}
+
+	printf -- '--- claim tick\n'
+	loop_drive --once || { printf 'FAIL loop: smile run --once exited %s\n' "$?"; return 1; }
+	local b n
+	for b in "$bead_a" "$bead_c"; do
+		for n in bead.claimed worktree.acquired pane.spawned; do
+			[ "$(loop_events "$b" "$n")" -eq 1 ] \
+				|| { printf 'FAIL loop: %s has %s %s events, want 1\n' "$b" "$(loop_events "$b" "$n")" "$n"; return 1; }
+		done
+	done
+	printf 'claimed, acquired, spawned once each for %s and %s\n' "$bead_a" "$bead_c"
+	n=$( (ls "$fixture/.factory/runs"/*.json 2>/dev/null || true) | wc -l | tr -d ' ')
+	[ "$n" -eq 2 ] || { printf 'FAIL loop: %s live run state files, want 2\n' "$n"; return 1; }
+	ls "$fixture/.factory/runs"
+
+	printf -- '--- waiting for the workers to open their pull requests\n'
+	local i=0
+	while [ "$i" -lt 40 ]; do
+		n=$(loop_prs "$bead_a" "$bead_c" 2>/dev/null || printf '0\n')
+		if [ "$n" -ge 2 ]; then break; fi
+		sleep 5
+		i=$((i + 1))
+	done
+	[ "$n" -ge 2 ] || { printf 'FAIL loop: %s open PRs carry a Bead trailer for A or C after %ss, want 2\n' "$n" "$((i * 5))"; loop_tail; return 1; }
+	(cd "$fixture" && gh pr list --state open --json number,headRefName,body --jq '.[] | "#\(.number) \(.headRefName)"')
+
+	printf -- '--- closing the beads (the review lane that does this lands in S4)\n'
+	(cd "$fixture" && BD_NON_INTERACTIVE=1 bd close "$bead_a" "$bead_c" "$bead_b" >/dev/null 2>&1) || true
+
+	printf -- '--- reap tick\n'
+	loop_drive --once || { printf 'FAIL loop: the reap tick exited %s\n' "$?"; loop_tail; return 1; }
+	for b in "$bead_a" "$bead_c"; do
+		[ "$(loop_events "$b" pane.reaped)" -eq 1 ] \
+			|| { printf 'FAIL loop: %s was not reaped\n' "$b"; loop_tail; return 1; }
+	done
+	n=$( (ls "$fixture/.factory/runs/done"/*.json 2>/dev/null || true) | wc -l | tr -d ' ')
+	[ "$n" -eq 2 ] || { printf 'FAIL loop: %s run files under runs/done, want 2\n' "$n"; loop_tail; return 1; }
+	grep -q '"event":"campaign.complete"' "$log" || { printf 'FAIL loop: no campaign.complete\n'; loop_tail; return 1; }
+	[ ! -e "$fixture/.factory/driver.pid" ] || { printf 'FAIL loop: the pid file outlived the driver\n'; return 1; }
+	loop_tail
+	printf 'PASS loop (runtime=%s)\n' "$runtime"
+}
+
+loop_tail() { printf -- '--- last events\n'; tail -15 "$log"; }
 
 # ---------------------------------------------------------------- down
 # repo_disposed <owner/name>: true when the repo is gone, or renamed to -trash and archived.

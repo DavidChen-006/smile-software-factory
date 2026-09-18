@@ -1,5 +1,8 @@
-# lib/events: append one line to .factory/events.jsonl (docs/RUNTIME-CONTRACT.md section 3).
-# Sourced, never run.
+# lib/events: append one line to the factory directory's events.jsonl (docs/RUNTIME-CONTRACT.md
+# section 3). Sourced, never run. lib/worktree says where that directory is, so a linked worktree
+# appends to the main checkout's log (section 8).
+
+. "$SMILE_ROOT/smile/bash/lib/worktree"
 
 # json_str <var> <text>: set <var> to <text> as a JSON string literal, escaped per the contract:
 # only \ " and code points below U+0020; everything else, including / and U+007F, passes through.
@@ -63,8 +66,8 @@ event_append() {
 		done
 		utf8_prefix cut "$raw" "$lo"; json_str detail "$cut"; event_line line
 	fi
-	mkdir -p "$SMILE_ROOT/.factory"
-	printf '%s\n' "$line" >> "$SMILE_ROOT/.factory/events.jsonl"
+	mkdir -p "$SMILE_FACTORY"
+	printf '%s\n' "$line" >> "$SMILE_FACTORY/events.jsonl"
 }
 
 # event_line <var>: the line for event_append's current fields (bash scoping lets it see them)

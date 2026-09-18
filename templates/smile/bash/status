@@ -3,6 +3,7 @@
 # prints "  unavailable"; exit is always 0. Contract: docs/RUNTIME-CONTRACT.md section 4.
 # python3 does only the JSON decoding.
 set -euo pipefail
+. "$SMILE_ROOT/smile/bash/lib/worktree"
 [ $# -eq 0 ] || { printf 'usage: smile status\n' >&2; exit 2; }
 cd "$SMILE_ROOT"
 
@@ -31,8 +32,8 @@ except Exception:
     print("  unavailable")'
 
 printf 'events:\n'
-if [ -e .factory/events.jsonl ]; then
-	python3 - .factory/events.jsonl <<'EOF'
+if [ -e "$SMILE_FACTORY/events.jsonl" ]; then
+	python3 - "$SMILE_FACTORY/events.jsonl" <<'EOF'
 import json, sys
 # surrogateescape keeps a corrupt line byte-exact on the way in and out; newline="" keeps a raw CR
 data = open(sys.argv[1], encoding="utf-8", errors="surrogateescape", newline="").read()

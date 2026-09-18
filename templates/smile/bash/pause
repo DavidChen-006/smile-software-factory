@@ -5,8 +5,8 @@
 set -euo pipefail -C
 . "$SMILE_ROOT/smile/bash/lib/events"
 [ $# -eq 0 ] || { printf 'usage: smile pause\n' >&2; exit 2; }
-mkdir -p "$SMILE_ROOT/.factory"
-if : 2>/dev/null > "$SMILE_ROOT/.factory/pause"; then   # stderr first, so the noclobber refusal is silent
+mkdir -p "$SMILE_FACTORY"
+if : 2>/dev/null > "$SMILE_FACTORY/pause"; then   # stderr first, so the noclobber refusal is silent
 	event_append driver.paused "actor=${SMILE_ACTOR:-human}"
 	printf 'paused\n'
 else

@@ -1,0 +1,20 @@
+# lib/worktree: where the factory directory is (docs/RUNTIME-CONTRACT.md section 8). Sourced, never run.
+#
+# From S3 on, the factory directory is the main checkout's .factory, found through git's common
+# dir, so a command run from a linked worktree reads and writes the same event log, pause file,
+# pid file, and run state as one run in the main checkout. SMILE_FACTORY is resolved once per
+# process; every command reads it instead of joining .factory onto SMILE_ROOT itself.
+
+# smile_factory_dir: the factory directory for $SMILE_ROOT. The common dir of a linked worktree is
+# the main checkout's .git, so its parent is the main checkout. A repo git cannot answer for (no
+# git, no repo, a git too old to know --path-format) falls back to SMILE_ROOT, which is what S1 did.
+smile_factory_dir() {
+	local common
+	common=$(git -C "$SMILE_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+	case "$common" in
+		/*) printf '%s/.factory' "$(dirname "$common")" ;;
+		*) printf '%s/.factory' "$SMILE_ROOT" ;;
+	esac
+}
+
+[ -n "${SMILE_FACTORY:-}" ] || SMILE_FACTORY=$(smile_factory_dir)
