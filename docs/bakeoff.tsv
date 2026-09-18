@@ -1,1 +1,3 @@
 spike	runtime	verify_result	verify_seconds	lines	files	reader_load	notes
+S1	bash	PASS (76 unit checks under bash 5.3 and 3.2; live install+doctor PASS)	-	272	9	2.5	per-command ms doctor 940 event 52 config 53 status 939; status decodes JSON via python3; event log byte-identical to py; keeps CR in raw corrupt status line
+S1	py	PASS (19 unit tests; live install PASS, doctor by hand PASS)	-	312	3	2.0	per-command ms doctor 591 event 104 config 105 status 413; stdlib only; strips CR from raw corrupt status line (follow-up queued)
