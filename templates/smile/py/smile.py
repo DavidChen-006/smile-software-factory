@@ -15,12 +15,11 @@ import config
 import events
 import mux
 
+# one Usage for the whole runtime; mux.py owns it because this file runs as __main__ and cannot be imported back
+from mux import Usage
+
 EVENT_FIELDS = ("bead", "pr", "sha", "actor", "detail")
 TOOL_ENV = {**os.environ, "BD_NON_INTERACTIVE": "1"}
-
-
-class Usage(Exception):
-    """Bad arguments: one stderr line, exit 2."""
 
 
 def no_args(args: list[str]) -> None:
