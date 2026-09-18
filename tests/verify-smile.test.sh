@@ -56,7 +56,7 @@ REPO=$(mfget "$RUNID" repo)
 check "fixture repo exists on GitHub" gh repo view "$REPO"
 
 # ---------------------------------------------------------------- feature install
-FEAT_OUT=$("$VS" feature install --runtime bash --run "$RUNID" 2>&1); FEAT_RC=$?
+FEAT_OUT=$("$VS" feature install --run "$RUNID" 2>&1); FEAT_RC=$?
 printf '%s\n' "$FEAT_OUT" | tail -1
 check "feature install exits 0" test "$FEAT_RC" -eq 0
 check "feature install printed PASS" grep -q '^PASS install' <<<"$FEAT_OUT"
@@ -64,9 +64,9 @@ check "install.log recorded" test -f "$EVIDENCE_ROOT/$RUNID/install.log"
 # a feature that has not landed yet: `loop` landed in S3 and would really drive this fixture
 "$VS" feature review --run "$RUNID" >/dev/null 2>&1; RC=$?
 check "unimplemented feature exits 2" test "$RC" -eq 2
-"$VS" feature install --runtime ruby --run "$RUNID" >/dev/null 2>&1; RC=$?
-check "bad --runtime rejected" test "$RC" -ne 0
-"$VS" feature install --runtime >/dev/null 2>&1; RC=$?
+"$VS" feature install --nosuch --run "$RUNID" >/dev/null 2>&1; RC=$?
+check "unknown flag rejected" test "$RC" -ne 0
+"$VS" feature install --backend >/dev/null 2>&1; RC=$?
 check "flag without value rejected" test "$RC" -ne 0
 
 # ---------------------------------------------------------------- stub worker, first run

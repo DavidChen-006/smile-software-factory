@@ -21,7 +21,7 @@ SHIM_NEEDS = ("bash", "sed", "dirname")  # the shim's own commands beyond the to
 
 
 def make_repo(name: str = "smile-core") -> str:
-    """A scratch git repo stamped by install.py with runtime: py. Returned path is real (no /var -> /private/var drift)."""
+    """A scratch git repo stamped by install.py. Returned path is real (no /var -> /private/var drift)."""
     parent = os.path.realpath(tempfile.mkdtemp(prefix="smile-core-"))
     path = os.path.join(parent, name)
     os.mkdir(path)
@@ -29,7 +29,6 @@ def make_repo(name: str = "smile-core") -> str:
     subprocess.run(["git", "-C", path, "config", "user.email", "test@localhost"], check=True)
     subprocess.run(["git", "-C", path, "config", "user.name", "test"], check=True)
     subprocess.run([sys.executable, str(ROOT / "install.py"), path], check=True, stdout=subprocess.DEVNULL)
-    set_config(path, "runtime", "py")
     return path
 
 
@@ -224,7 +223,6 @@ class ConfigTest(RepoCase):
         return smile(self.repo, "config", *args)
 
     def test_values_defaults_and_empty(self) -> None:
-        self.assertEqual(self.get("get", "runtime").stdout, b"py\n")
         self.assertEqual(self.get("get", "backend").stdout, b"\n")
         cfg = Path(self.repo, "smile.config.yaml")
         original = cfg.read_text()
@@ -233,19 +231,19 @@ class ConfigTest(RepoCase):
         r = self.get("get", "max_parallel")
         self.assertEqual((r.returncode, r.stdout), (0, b"3\n"))
         # first wins, comments, indented and space-before-colon lines ignored, CR/tab trimmed, no yaml library
-        cfg.write_text("# c\nruntime: py\nmerge:\thuman \t\nmerge: auto\n  base_branch: dev\nbase_branch : dev\n"
+        cfg.write_text("# c\nbackend: tmux\nmerge:\thuman \t\nmerge: auto\n  base_branch: dev\nbase_branch : dev\n"
                        "worker.model:\tcafé\r\nwatchtower:off\n")
         self.assertEqual(self.get("get", "merge").stdout, b"human\n")
         self.assertEqual(self.get("get", "base_branch").stdout, b"main\n")
         self.assertEqual(self.get("get", "worker.model").stdout, "café\n".encode())
         self.assertEqual(self.get("get", "watchtower").stdout, b"off\n")
-        cfg.write_bytes(b"runtime: py\nworker.model: \xff\n")
+        cfg.write_bytes(b"backend: tmux\nworker.model: \xff\n")
         self.assertEqual(self.get("get", "worker.model").stdout, b"\xff\n")
 
     def test_exit_codes(self) -> None:
         r = self.get("get", "nosuch")
         self.assertEqual((r.returncode, r.stdout), (3, b""))
-        for args in ((), ("get",), ("set", "runtime"), ("get", "runtime", "extra")):
+        for args in ((), ("get",), ("set", "backend"), ("get", "backend", "extra")):
             r = self.get(*args)
             self.assertEqual((r.returncode, r.stdout), (2, b""), args)
 

@@ -19,12 +19,12 @@ Preconditions:
 
 - A fixture with `install: stamped`.
 
-- **All present.** Run `verify-smile feature doctor --runtime bash` (or `--runtime py`). The helper sets `runtime: <r>` in `<fixture>/smile.config.yaml`, runs `<fixture>/smile/smile doctor`, and asserts exit code `0` and exactly seven lines each starting with `ok `. It prints `PASS doctor (runtime=<r>)` or `FAIL doctor: <reason>`.
-- **One missing.** Not driven live; `tests/core.test.sh` proves the missing-tool lines, the backend variants, and the read-only rule against a PATH built from stubs.
+- **All present.** Run `verify-smile feature doctor`. The helper runs `<fixture>/smile/smile doctor` and asserts exit code `0` and exactly seven lines each starting with `ok `. It prints `PASS doctor` or `FAIL doctor: <reason>`.
+- **One missing.** Not driven live; `tests/test_core.py` proves the missing-tool lines, the backend variants, and the read-only rule against a PATH built from stubs.
 - **Proof.** `~/.smile-verify/<runid>/doctor.log` holds the transcript and the exit code.
 
 ## Gotchas
 
 - `gh auth status` writes to stderr. Assert the exit code, not stdout.
 - Doctor must not create `.factory/` or touch bd. It is read-only.
-- The helper edits the fixture's `smile.config.yaml` in place, so the fixture's working tree is dirty afterwards.
+- The helper is read-only on the fixture: doctor takes no config edit.

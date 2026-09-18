@@ -23,7 +23,7 @@ Preconditions:
 - A fixture with `install: stamped`, `watchtower: on`, stubs configured.
 - `SMILE_STUB_CRASH_BEADS="<B>"` and `SMILE_STUB_CRASH_TIMES=2`, so bead B crashes twice.
 
-- **Spawn.** Run `verify-smile feature watchtower --runtime bash`. `tmux list-windows -t smile-verify-<runid>` includes a window named `watchtower`.
+- **Spawn.** Run `verify-smile feature watchtower`. `tmux list-windows -t smile-verify-<runid>` includes a window named `watchtower`.
 - **Escalate.** After the second crash of B, the event log has `worker.crashed` twice for B and a `watch.escalation` whose `bead` is B.
 - **Pause.** `.factory/pause` exists and the next `driver.paused` event follows the escalation in the log. No `bead.claimed` appears after it.
 - **Resume.** The helper runs `smile resume`. The log gains `driver.resumed`.

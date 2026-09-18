@@ -51,7 +51,7 @@ If any check fails, run `down` on that run and start a new one. Do not repair a 
 
 ## Drive
 
-`verify-smile feature <name> --runtime <bash|py> [--real-review] [--backend <b>] [--run <runid>]`
+`verify-smile feature <name> [--real-review] [--backend <b>] [--run <runid>]`
 drives one feature from the map under `features/` and prints `PASS <name> ...` or
 `FAIL <name>: <reason>`. Without `--run` it uses the newest run. A feature that has not landed
 yet prints `NOT IMPLEMENTED <name>` and exits 2.

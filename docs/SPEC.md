@@ -1,6 +1,6 @@
 # SMILE software factory build plan
 
-SMILE turns a spec into merged, reviewed code with agents in visible panes and a deterministic script driving them. This document freezes the design agreed on 2026-09-18 and lays out the spikes that build it. Two runtimes, bash and Python, are built side by side through spike 4 and measured. One survives. Spikes run in this order. S0 verification harness, S1 core, S2 mux seam, S3 driver, S4 review, S5 watchtower, S6 narration, S7 skills, S8 backends, S9 dogfood.
+SMILE turns a spec into merged, reviewed code with agents in visible panes and a deterministic script driving them. This document freezes the design agreed on 2026-09-18 and lays out the spikes that build it. Two runtimes, bash and Python, were built side by side and measured; Python won and is the only runtime. Spikes run in this order. S0 verification harness, S1 core, S2 mux seam, S3 driver, S4 review, S5 watchtower, S6 narration, S7 skills, S8 backends, S9 dogfood.
 
 ## How to read this
 
@@ -13,6 +13,8 @@ Tests alone are not sufficient verification. A spike is verified only when its u
 ## Design
 
 This section is the frozen design. Every spike implements a part of it. A spike that finds the design wrong stops and reports rather than quietly diverging.
+
+Both runtimes were built side by side through S2 and half of S3. On 2026-09-18 the owner chose Python, and the bash runtime was removed in the PR that carries this paragraph. Everything below names py files only. `docs/bakeoff.tsv` stays as the record of the measurements, and Appendix E records the decision.
 
 ### Four lanes
 
@@ -57,10 +59,10 @@ The driver runs the reviewer headless with the normal signed-in Claude. The revi
 
 `install.py` in the skill repo copies these into the target repo. A force flag replaces stamped files that drifted.
 
-- `smile/smile`, the entry script. It reads `runtime` from the config and dispatches to `smile/bash/` or `smile/py/`.
-- `smile/bash/` and `smile/py/`, the two runtimes. Each exposes the same commands. `doctor`, `init`, `run`, `review`, `gate`, `audit`, `pause`, `resume`, `status`, and `mux`.
+- `smile/smile`, the entry script. It finds the repo root and dispatches to `smile/py/`.
+- `smile/py/`, the runtime. It exposes the commands `doctor`, `init`, `run`, `review`, `gate`, `audit`, `pause`, `resume`, `status`, and `mux`.
 - `.claude/skills/` with campaign, preflight, watchtower, smile-code-writer, smile-code-reviewer, test-writer, draftspec, grilling, and architect.
-- `smile.config.yaml` with the keys `runtime`, `backend`, `worker.model`, `worker.permission_mode`, `reviewer.models`, `max_parallel`, `watchtower`, `merge`, and `base_branch`.
+- `smile.config.yaml` with the keys `backend`, `worker.model`, `worker.permission_mode`, `reviewer.models`, `max_parallel`, `watchtower`, `merge`, and `base_branch`.
 - `prompts/worker.md`, `prompts/reviewer.md`, and `prompts/watchtower.md`.
 - A `.gitignore` line for `.factory/`.
 
@@ -68,7 +70,7 @@ The driver runs the reviewer headless with the normal signed-in Claude. The revi
 
 ### The bakeoff
 
-Both runtimes implement the same command set and emit the same events, so the verification harness drives either one through the `runtime` key. `docs/bakeoff.tsv` records one row per spike per runtime with these columns, measured by the orchestrator after both pull requests merge. `spike`, `runtime`, `verify_result`, `verify_seconds`, `lines`, `files`, `reader_load`, and `notes`. `reader_load` is the cold reviewer's score from 1 to 5 on the two axes in the minimize-reader-load principle, layers to trace and state to hold, averaged. After S4 the orchestrator writes a recommendation in Appendix E and David picks the runtime. The other runtime is deleted before S5 begins.
+Both runtimes implemented the same command set and emitted the same events, so the verification harness could drive either one. `docs/bakeoff.tsv` records one row per spike per runtime with these columns, measured by the orchestrator after both pull requests merge. `spike`, `runtime`, `verify_result`, `verify_seconds`, `lines`, `files`, `reader_load`, and `notes`. `reader_load` is the cold reviewer's score from 1 to 5 on the two axes in the minimize-reader-load principle, layers to trace and state to hold, averaged. After S4 the orchestrator writes a recommendation in Appendix E and David picks the runtime. The other runtime is deleted before S5 begins.
 
 ### Cuts
 
@@ -127,7 +129,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Build.**
 
 - [ ] `verify-smile up` creates the fixture per the boot recipe and prints the run id and paths.
-- [ ] `verify-smile feature <name> --runtime <bash|py> [--real-review]` drives one mapped feature and asserts its end state.
+- [ ] `verify-smile feature <name> [--real-review]` drives one mapped feature and asserts its end state.
 - [ ] `verify-smile down <runid>` runs cleanup and confirms the evidence directory still exists.
 - [ ] Assertions read `events.jsonl`, `gh pr list --json`, and `bd list --json`. Never the driver's own summary.
 
@@ -158,10 +160,10 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Files.**
 
 - [ ] Create `templates/smile/smile`.
-- [ ] Create `templates/smile/bash/` with `doctor`, `init`, `status`, `pause`, `resume`, and `lib/events`, `lib/config`. Python fork creates `templates/smile/py/smile.py` and the `smile/py/` package with the same commands.
+- [ ] Create `templates/smile/py/smile.py` and the `smile/py/` package with the commands `doctor`, `init`, `status`, `pause`, `resume`, plus the events and config modules.
 - [ ] Create `templates/smile.config.yaml`, `templates/prompts/`, and `templates/.claude/skills/` placeholders.
 - [ ] Create `install.py` at the repo root and `.claude/skills/smile/SKILL.md`, the skill that runs it.
-- [ ] Create `tests/core.test.sh` and `tests/test_core.py`.
+- [ ] Create `tests/test_core.py`.
 
 **Build.**
 
@@ -179,11 +181,11 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/core.test.sh` covers install, drift refusal, force, doctor with a missing tool on PATH, events schema, config defaults, pause and resume. Run `bash tests/core.test.sh`. Python fork runs `python3 -m pytest tests/test_core.py`.
+- [ ] `tests/test_core.py` covers install, drift refusal, force, doctor with a missing tool on PATH, events schema, config defaults, pause and resume. Run `python3 -m unittest tests.test_core`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature install --runtime <r>` and `verify-smile feature doctor --runtime <r>`. Pass when both print `PASS` and the evidence directory has the doctor transcript.
+- [ ] `verify-smile feature install` and `verify-smile feature doctor`. Pass when both print `PASS` and the evidence directory has the doctor transcript.
 
 **Review gate.** None. S1 is not review-gated.
 
@@ -198,8 +200,8 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Files.**
 
-- [ ] Create `templates/smile/bash/mux` and `templates/smile/bash/mux.d/tmux`. Python fork creates the `mux` module and `backends/tmux.py`.
-- [ ] Create `tests/mux.test.sh` and `tests/test_mux.py`.
+- [ ] Create the `mux` module and `backends/tmux.py` under `templates/smile/py/`.
+- [ ] Create `tests/test_mux.py`.
 
 **Build.**
 
@@ -215,11 +217,11 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/mux.test.sh` covers spawn, alive on a running and an exited command, kill, double kill, and a missing backend name. Run `bash tests/mux.test.sh`. Python fork runs `python3 -m pytest tests/test_mux.py`.
+- [ ] `tests/test_mux.py` covers spawn, alive on a running and an exited command, kill, double kill, and a missing backend name. Run `python3 -m unittest tests.test_mux`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature mux --runtime <r>` spawns three panes in the fixture session, asserts the window count rose by three, kills them, asserts it fell back to where it started. Pass when it prints `PASS`.
+- [ ] `verify-smile feature mux` spawns three panes in the fixture session, asserts the window count rose by three, kills them, asserts it fell back to where it started. Pass when it prints `PASS`.
 
 **Review gate.** None. S2 is not review-gated.
 
@@ -234,9 +236,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Files.**
 
-- [ ] Create `templates/smile/bash/run` and `templates/smile/bash/lib/worktree`. Python fork creates `run.py` and `worktree.py`.
+- [ ] Create `run.py` and `worktree.py` under `templates/smile/py/`.
 - [ ] Create `templates/prompts/worker.md`.
-- [ ] Create `tests/driver.test.sh` and `tests/test_driver.py`.
+- [ ] Create `tests/test_driver.py`.
 
 **Build.**
 
@@ -253,11 +255,11 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/driver.test.sh` covers singleton refusal, pause skips claims, max_parallel cap, crash respawn once, and event order. bd and treehouse are real. The mux backend is a fake that records calls. Run `bash tests/driver.test.sh`. Python fork runs `python3 -m pytest tests/test_driver.py`.
+- [ ] `tests/test_driver.py` covers singleton refusal, pause skips claims, max_parallel cap, crash respawn once, and event order. bd and treehouse are real. The mux backend is a fake that records calls. Run `python3 -m unittest tests.test_driver`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature loop --runtime <r>` seeds two beads in the fixture, runs `smile run --once` with the stub worker, and asserts two `bead.claimed`, two `worktree.acquired`, two `pane.spawned`, two run files, and two pull requests with `Bead:` trailers in `gh pr list`; then closes both beads with `bd close`, runs `smile run --once` again, and asserts two `pane.reaped` and `campaign.complete`. Pass when it prints `PASS`. The full sequence through review and merge is S4's live box.
+- [ ] `verify-smile feature loop` seeds two beads in the fixture, runs `smile run --once` with the stub worker, and asserts two `bead.claimed`, two `worktree.acquired`, two `pane.spawned`, two run files, and two pull requests with `Bead:` trailers in `gh pr list`; then closes both beads with `bd close`, runs `smile run --once` again, and asserts two `pane.reaped` and `campaign.complete`. Pass when it prints `PASS`. The full sequence through review and merge is S4's live box.
 
 **Review gate.** None. S3 is not review-gated.
 
@@ -272,9 +274,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Files.**
 
-- [ ] Create `templates/smile/bash/review`, `templates/smile/bash/gate`, and `templates/smile/bash/audit`. Python fork creates the matching modules.
+- [ ] Create the `review`, `gate`, and `audit` modules under `templates/smile/py/`.
 - [ ] Create `templates/prompts/reviewer.md` and `templates/.claude/skills/smile-code-reviewer/SKILL.md` as a first version with the current reviewer execution rules. S7 upgrades the rubric.
-- [ ] Create `tests/review.test.sh` and `tests/test_review.py`.
+- [ ] Create `tests/test_review.py`.
 
 **Build.**
 
@@ -293,13 +295,13 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/review.test.sh` covers verdict parsing, the no-verdict-at-head filter, issue creation from findings, the human gate matrix, and audit. GitHub calls go through a recorded fake of `gh`. Run `bash tests/review.test.sh`. Python fork runs `python3 -m pytest tests/test_review.py`.
+- [ ] `tests/test_review.py` covers verdict parsing, the no-verdict-at-head filter, issue creation from findings, the human gate matrix, and audit. GitHub calls go through a recorded fake of `gh`. Run `python3 -m unittest tests.test_review`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature review --runtime <r>` runs the changes-then-approve path with the stub reviewer. Pass when the issue is opened and closed and the pull request merges.
-- [ ] `verify-smile feature review --runtime <r> --real-review` runs one bead with the real reviewer on the stub worker's trivial diff. Pass when a verdict event exists with a non-empty `detail`.
-- [ ] `verify-smile feature gate --runtime <r>`. Pass when the pull request carries `smile:approved` and stays open, and a manual `gh pr merge` closes the bead on the next tick.
+- [ ] `verify-smile feature review` runs the changes-then-approve path with the stub reviewer. Pass when the issue is opened and closed and the pull request merges.
+- [ ] `verify-smile feature review --real-review` runs one bead with the real reviewer on the stub worker's trivial diff. Pass when a verdict event exists with a non-empty `detail`.
+- [ ] `verify-smile feature gate`. Pass when the pull request carries `smile:approved` and stays open, and a manual `gh pr merge` closes the bead on the next tick.
 
 **Review gate.** None. S4 is not review-gated.
 
@@ -351,7 +353,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Files.**
 
 - [ ] Create `templates/.claude/skills/campaign/SKILL.md`, ported from `~/zasti/agent-skills/skills/campaign/SKILL.md`.
-- [ ] Create `templates/smile/bash/narrate` or the Python equivalent, a helper that prints new events since a cursor in one line each.
+- [ ] Create the `narrate` module under `templates/smile/py/`, a helper that prints new events since a cursor in one line each.
 
 **Build.**
 
@@ -418,8 +420,8 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Files.**
 
-- [ ] Create `mux.d/cmux` and `mux.d/herdr` or the Python equivalents.
-- [ ] Extend `tests/mux.test.sh` with a backend matrix that skips absent backends and prints `skipped <backend>` rather than passing silently.
+- [ ] Create `backends/cmux.py` and `backends/herdr.py`.
+- [ ] Extend `tests/test_mux.py` with a backend matrix that skips absent backends and prints `skipped <backend>` rather than passing silently.
 
 **Build.**
 
@@ -432,7 +434,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `bash tests/mux.test.sh` on this machine runs all three backends.
+- [ ] `python3 -m unittest tests.test_mux` on this machine runs all three backends.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -524,4 +526,4 @@ Open questions each fork settles by running something before building on it. Ans
 
 ## Appendix E. Bakeoff recommendation
 
-Written after S4. Open.
+Decided 2026-09-18, early, to stop paying for two runtimes through the rest of S3. Through S2 the two runtimes were behaviourally indistinguishable, with byte-identical stdout and exit codes on every box the harness drove. Python was shorter by lines and carried one more file, and slower per call, roughly 80 ms against bash's 40 ms, which is noise next to a tick interval measured in seconds. Python drew fewer review findings per round, which is the axis that decides who can maintain this, so David chose Python and the bash runtime was removed in the PR that added this appendix. `docs/bakeoff.tsv` keeps the per-spike rows.

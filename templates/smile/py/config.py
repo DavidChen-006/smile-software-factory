@@ -5,7 +5,6 @@ import re
 
 # key -> default. This table is the schema; a key not in it is unknown.
 SCHEMA = {
-    "runtime": "bash",
     "backend": "",
     "worker.model": "opus",
     "worker.permission_mode": "acceptEdits",

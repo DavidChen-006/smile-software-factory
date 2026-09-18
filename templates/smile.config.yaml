@@ -1,6 +1,4 @@
 # SMILE config. One `key: value` per line, `#` lines are comments, no nesting.
-# Which runtime the smile shim dispatches to: bash or py.
-runtime: bash
 # Pane backend: tmux, cmux, or herdr. Empty means auto-detect in that order.
 backend:
 # Claude model the driver launches each worker with.

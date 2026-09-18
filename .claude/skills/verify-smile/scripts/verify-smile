@@ -2,7 +2,7 @@
 # verify-smile: drive the SMILE factory against a throwaway fixture repo and keep the proof.
 #
 #   verify-smile up                                   create a fixture, print "fixture ready <runid> <path>"
-#   verify-smile feature <name> [--runtime bash|py] [--real-review] [--backend <b>] [--run <runid>]
+#   verify-smile feature <name> [--real-review] [--backend <b>] [--run <runid>]
 #   verify-smile down <runid>                         collect evidence, tear the fixture down
 #   verify-smile list                                 known runs and their state
 #   verify-smile gc [--dry-run]                       delete leftover smile-verify-*-trash repos
@@ -165,11 +165,10 @@ need_value() { [ -n "${2:-}" ] || die "flag $1 needs a value"; }
 
 cmd_feature() {
 	local name="${1:-}"; shift || true
-	[ -n "$name" ] || die "usage: verify-smile feature <name> [--runtime bash|py] [--real-review] [--backend <b>] [--run <runid>]"
-	local runtime=bash real_review=0 backend="" runid=""
+	[ -n "$name" ] || die "usage: verify-smile feature <name> [--real-review] [--backend <b>] [--run <runid>]"
+	local real_review=0 backend="" runid=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-			--runtime) need_value "$1" "${2:-}"; runtime="$2"; shift ;;
 			--real-review) real_review=1 ;;
 			--backend) need_value "$1" "${2:-}"; backend="$2"; shift ;;
 			--run) need_value "$1" "${2:-}"; runid="$2"; shift ;;
@@ -177,7 +176,6 @@ cmd_feature() {
 		esac
 		shift
 	done
-	case "$runtime" in bash|py) ;; *) die "--runtime must be bash or py, got '$runtime'" ;; esac
 	[ -n "$runid" ] || runid=$(latest_run)
 	[ -n "$runid" ] || die "no run found; run 'verify-smile up' first"
 	require_manifest "$runid"
@@ -186,13 +184,13 @@ cmd_feature() {
 	fixture=$(mf "$runid" fixture)
 	logf="$EVIDENCE_ROOT/$runid/$name.log"
 	{
-		printf '=== feature %s runtime=%s real_review=%s backend=%s run=%s at %s\n' \
-			"$name" "$runtime" "$real_review" "${backend:-default}" "$runid" "$(date -u +%FT%TZ)"
+		printf '=== feature %s real_review=%s backend=%s run=%s at %s\n' \
+			"$name" "$real_review" "${backend:-default}" "$runid" "$(date -u +%FT%TZ)"
 		case "$name" in
-			install) feature_install "$runid" "$fixture" "$runtime" ;;
-			doctor) feature_doctor "$runid" "$fixture" "$runtime" ;;
-			mux) feature_mux "$runid" "$fixture" "$runtime" "$backend" ;;
-			loop) feature_loop "$runid" "$fixture" "$runtime" ;;
+			install) feature_install "$runid" "$fixture" ;;
+			doctor) feature_doctor "$runid" "$fixture" ;;
+			mux) feature_mux "$runid" "$fixture" "$backend" ;;
+			loop) feature_loop "$runid" "$fixture" ;;
 			review|gate|watchtower|narrate)
 				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
 				exit 2 ;;
@@ -202,7 +200,7 @@ cmd_feature() {
 }
 
 feature_install() {
-	local runid="$1" fixture="$2" runtime="$3"
+	local runid="$1" fixture="$2"
 	local install
 	install=$(mf "$runid" install)
 	[ -d "$fixture/.beads" ] || { printf 'FAIL install: no .beads in fixture\n'; return 1; }
@@ -210,31 +208,27 @@ feature_install() {
 		|| { printf 'FAIL install: tmux session missing\n'; return 1; }
 	case "$install" in
 		skipped)
-			printf 'PASS install (stamp skipped, no runtime yet)\n' ;;
+			printf 'PASS install (stamp skipped, nothing stamped yet)\n' ;;
 		stamped)
 			[ -x "$fixture/smile/smile" ] || { printf 'FAIL install: smile/smile not stamped or not executable\n'; return 1; }
 			[ -f "$fixture/smile.config.yaml" ] || { printf 'FAIL install: smile.config.yaml missing\n'; return 1; }
-			printf 'PASS install (stamped, runtime=%s)\n' "$runtime" ;;
+			printf 'PASS install (stamped)\n' ;;
 		*)
 			printf 'FAIL install: stamp result %s\n' "$install"; return 1 ;;
 	esac
 }
 
-# feature_doctor: set `runtime: <r>` in the fixture config, run `smile doctor`, and assert exit 0
-# with exactly seven `ok ` lines. The transcript goes to the feature log through the caller's tee.
+# feature_doctor: run `smile doctor` in the fixture and assert exit 0 with exactly seven `ok `
+# lines. The transcript goes to the feature log through the caller's tee.
 feature_doctor() {
-	local runid="$1" fixture="$2" runtime="$3" out rc=0
+	local runid="$1" fixture="$2" out rc=0
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL doctor: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
-	grep -q '^runtime:' "$fixture/smile.config.yaml" || { printf 'FAIL doctor: no runtime line in config\n'; return 1; }
-	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
-	# commit the edit so the fixture's tree stays clean for later features
-	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
 	out=$("$fixture/smile/smile" doctor) || rc=$?
 	printf '%s\n--- exit %s\n' "$out" "$rc"
 	[ "$rc" -eq 0 ] || { printf 'FAIL doctor: exit %s\n' "$rc"; return 1; }
 	[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 7 ] || { printf 'FAIL doctor: expected seven lines\n'; return 1; }
 	[ "$(printf '%s\n' "$out" | grep -c '^ok ')" -eq 7 ] || { printf 'FAIL doctor: a line is not ok\n'; return 1; }
-	printf 'PASS doctor (runtime=%s)\n' "$runtime"
+	printf 'PASS doctor\n'
 }
 
 # feature_mux: drive the three verbs of `smile mux` against the fixture's own tmux session.
@@ -242,16 +236,12 @@ feature_doctor() {
 # asserts each is dead and the count is back, then kills one twice to prove kill is idempotent.
 # Only handles this run spawned are ever killed; the session belongs to the fixture.
 feature_mux() {
-	local runid="$1" fixture="$2" runtime="$3" backend="$4"
+	local runid="$1" fixture="$2" backend="$3"
 	local smile session before after rc=0 h handles=""
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL mux: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
 	smile="$fixture/smile/smile"
 	[ -x "$smile" ] || { printf 'FAIL mux: %s is not executable\n' "$smile"; return 1; }
-	# the file for the runtime under test, so --runtime py on a bash-only stamp is not a pass
-	case "$runtime" in
-		bash) [ -x "$fixture/smile/bash/mux" ] || { printf 'NOT IMPLEMENTED mux (no smile/bash/mux stamped)\n'; exit 2; } ;;
-		py) [ -f "$fixture/smile/py/backends/tmux.py" ] || { printf 'NOT IMPLEMENTED mux (no smile/py/backends/tmux.py stamped)\n'; exit 2; } ;;
-	esac
+	[ -f "$fixture/smile/py/backends/tmux.py" ] || { printf 'NOT IMPLEMENTED mux (no smile/py/backends/tmux.py stamped)\n'; exit 2; }
 
 	# The backend key is written on every run, empty when --backend is absent, so a value a
 	# previous feature run left behind cannot decide this one.
@@ -259,10 +249,9 @@ feature_mux() {
 		''|tmux|cmux|herdr|screen) ;;
 		*) printf 'FAIL mux: --backend %s is not a backend name\n' "$backend"; return 1 ;;
 	esac
-	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml"
 	sed -i.bak "s/^backend:.*/backend: $backend/" "$fixture/smile.config.yaml"
 	rm -f "$fixture/smile.config.yaml.bak"
-	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
+	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: backend ${backend:-auto}"
 
 	# The fixture's own session, so nothing of the user's is ever touched.
 	session=$(mf "$runid" tmux_session)
@@ -305,7 +294,7 @@ feature_mux() {
 	h=${handles##* }
 	"$smile" mux kill "$h" || { printf 'FAIL mux: second kill of %s exited %s, want 0\n' "$h" "$?"; return 1; }
 	printf 'second kill of %s exited 0\n' "$h"
-	printf 'PASS mux (runtime=%s)\n' "$runtime"
+	printf 'PASS mux\n'
 }
 
 # feature_loop: drive the driver through one claim tick and one reap tick with the stub worker.
@@ -317,18 +306,11 @@ feature_mux() {
 # flag into ~/.claude.json and treehouse pools its worktrees under $HOME; gh and git keep the real
 # config through GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, so the fixture repo is still reachable.
 feature_loop() {
-	local runid="$1" fixture="$2" runtime="$3"
+	local runid="$1" fixture="$2"
 	local smile session home gh_cfg git_cfg gh_token git_name git_email log bead_a bead_b bead_c ready
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL loop: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
 	smile="$fixture/smile/smile"
-	case "$runtime" in
-		bash) [ -x "$fixture/smile/bash/run" ] || { printf 'NOT IMPLEMENTED loop (no smile/bash/run stamped)\n'; exit 2; } ;;
-		py) [ -f "$fixture/smile/py/run.py" ] || { printf 'NOT IMPLEMENTED loop (no smile/py/run stamped)\n'; exit 2; } ;;
-	esac
-
-	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml"
-	rm -f "$fixture/smile.config.yaml.bak"
-	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
+	[ -f "$fixture/smile/py/run.py" ] || { printf 'NOT IMPLEMENTED loop (no smile/py/run.py stamped)\n'; exit 2; }
 
 	# `up` seeds bd itself; the driver also needs the treehouse pool and .factory, which is what a
 	# user gets from `smile init`. It is idempotent, so a fixture already initialized is untouched.
@@ -441,7 +423,7 @@ print(sum(1 for pr in json.load(sys.stdin)
 	grep -q '"event":"campaign.complete"' "$log" || { printf 'FAIL loop: no campaign.complete\n'; loop_tail; return 1; }
 	[ ! -e "$fixture/.factory/driver.pid" ] || { printf 'FAIL loop: the pid file outlived the driver\n'; return 1; }
 	loop_tail
-	printf 'PASS loop (runtime=%s)\n' "$runtime"
+	printf 'PASS loop\n'
 }
 
 loop_tail() { printf -- '--- last events\n'; tail -15 "$log"; }

@@ -20,8 +20,8 @@ tmux has-session -t "smile-verify-$R" && echo "session ok"
 echo '$ bd ready --json  (doctor)'
 (cd "$F" && bd ready --json | python3 -c 'import json,sys; print([i["id"] for i in json.load(sys.stdin)])')
 
-echo '$ verify-smile feature install --runtime bash'
-"$VS" feature install --runtime bash
+echo '$ verify-smile feature install'
+"$VS" feature install
 echo "\$ verify-smile down $R"
 "$VS" down "$R"
 echo "\$ ls $ROOT/$R"
