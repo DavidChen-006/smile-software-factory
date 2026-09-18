@@ -22,11 +22,6 @@ check() {   # check <description> <command...>
 	fi
 }
 
-# set_runtime <value>: rewrite the runtime line in the stamped config, portably
-set_runtime() {
-	sed -i.bak "s/^runtime: .*/runtime: $1/" "$TARGET/smile.config.yaml" && rm -f "$TARGET/smile.config.yaml.bak"
-}
-
 TEMPLATE_FILES=$(cd "$ROOT/templates" && find . -type f ! -name .DS_Store ! -path '*/__pycache__/*' | sed 's|^\./||' | sort)
 N=$(printf '%s\n' "$TEMPLATE_FILES" | wc -l | tr -d ' ')
 
@@ -85,17 +80,15 @@ SHIM="$TARGET/smile/smile"
 "$SHIM" nosuch >/dev/null 2>&1; check "shim with unknown command exits 2" test $? -eq 2
 "$SHIM" "" >/dev/null 2>&1; check "shim with empty command exits 2" test $? -eq 2
 "$SHIM" ../x >/dev/null 2>&1; check "shim rejects a path as command" test $? -eq 2
-mkdir -p "$TARGET/smile/bash"
-printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$SMILE_ROOT" "$*"\n' > "$TARGET/smile/bash/probe"
-chmod +x "$TARGET/smile/bash/probe"
-GOT=$(cd / && "$SHIM" probe a b 2>&1)
-check "shim execs smile/bash/<command> with args and SMILE_ROOT" test "$GOT" = "$TARGET|a b"
 mkdir -p "$TARGET/nested/smile" && cp "$SHIM" "$TARGET/nested/smile/smile" && printf 'gitdir: nowhere\n' > "$TARGET/nested/.git"
-"$TARGET/nested/smile/smile" probe >/dev/null 2>&1; check "shim stops at a .git entry and exits 2 without config there" test $? -eq 2
-set_runtime py
-"$SHIM" probe >/dev/null 2>&1; check "py runtime without smile.py exits 2" test $? -eq 2
-set_runtime ruby
-"$SHIM" probe >/dev/null 2>&1; check "unknown runtime exits 2" test $? -eq 2
+"$TARGET/nested/smile/smile" config get base_branch >/dev/null 2>&1; check "shim stops at a .git entry and exits 2 without config there" test $? -eq 2
+# a non-default value proves the shim found this repo's config through SMILE_ROOT, not a fallback
+sed -i.bak 's/^max_parallel: .*/max_parallel: 7/' "$TARGET/smile.config.yaml" && rm -f "$TARGET/smile.config.yaml.bak"
+GOT=$(cd / && "$SHIM" config get max_parallel 2>&1)
+check "shim execs the py runtime with args and SMILE_ROOT" test "$GOT" = "7"
+mv "$TARGET/smile/py/smile.py" "$TARGET/smile/py/smile.py.off"
+"$SHIM" config get max_parallel >/dev/null 2>&1; check "missing py runtime exits 2" test $? -eq 2
+mv "$TARGET/smile/py/smile.py.off" "$TARGET/smile/py/smile.py"
 
 if [ "$FAILS" -eq 0 ]; then
 	printf 'PASS install.test.sh\n'

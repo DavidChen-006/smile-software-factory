@@ -25,9 +25,9 @@ Preconditions:
 - A fixture with `install: stamped` and the stub worker and stub reviewer configured.
 - For the changes path, `SMILE_STUB_CHANGES_ONCE=1`.
 
-- **Changes then approve.** Run `verify-smile feature review --runtime bash`. The helper runs the loop with the stub reviewer rejecting once. `gh issue list --label review --state all --json number,state` shows one issue per bead that was first `OPEN` and is now `CLOSED`. Each PR has a comment linking its issue. Both PRs end `MERGED`.
+- **Changes then approve.** Run `verify-smile feature review`. The helper runs the loop with the stub reviewer rejecting once. `gh issue list --label review --state all --json number,state` shows one issue per bead that was first `OPEN` and is now `CLOSED`. Each PR has a comment linking its issue. Both PRs end `MERGED`.
 - **Fix round.** The stub worker's fix commit message contains `addresses #<issue>`. The event log has `issue.opened` then `issue.resolved` for that issue number.
-- **Real reviewer.** Run `verify-smile feature review --runtime bash --real-review`. One bead runs with the real reviewer. The `review.verdict` event has a non-empty `detail` and, from S7 on, that detail contains a `Principles applied` line.
+- **Real reviewer.** Run `verify-smile feature review --real-review`. One bead runs with the real reviewer. The `review.verdict` event has a non-empty `detail` and, from S7 on, that detail contains a `Principles applied` line.
 - **Audit.** Merge a throwaway PR by hand with `gh pr merge`, run `smile audit`. Its number is listed. After the driver reviews and merges normally, `smile audit` prints nothing.
 - **Proof.** `~/.smile-verify/<runid>/review.log` holds the issue and PR listings. `factory/events.jsonl` holds the verdict lines.
 

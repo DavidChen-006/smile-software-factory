@@ -21,12 +21,12 @@ Preconditions:
 - A fixture with `install: stamped`.
 - `--backend` names an installed backend and is written to the fixture's `backend` key. Left out, the runtime auto-detects, which is tmux on a normal box.
 
-- **Spawn three.** Run `verify-smile feature mux --runtime bash`. The helper sets `runtime: <r>` in the fixture config and commits it, exports `SMILE_MUX_SESSION` to the fixture's own session `smile-verify-<runid>`, counts the windows there, then spawns `w1`, `w2`, `w3` each running `sleep 300` in the fixture through `<fixture>/smile/smile mux spawn`. Each prints a handle beginning with a backend name, and `tmux list-windows -t "=smile-verify-<runid>"` shows three more windows than before.
+- **Spawn three.** Run `verify-smile feature mux`. The helper writes the `backend` key in the fixture config and commits it, exports `SMILE_MUX_SESSION` to the fixture's own session `smile-verify-<runid>`, counts the windows there, then spawns `w1`, `w2`, `w3` each running `sleep 300` in the fixture through `<fixture>/smile/smile mux spawn`. Each prints a handle beginning with a backend name, and `tmux list-windows -t "=smile-verify-<runid>"` shows three more windows than before.
 - **Alive.** `smile mux alive <handle>` exits `0` for each of the three.
 - **Kill.** `smile mux kill <handle>` for each exits `0`, `alive` then exits `1` for each, and the window count is back to what it was.
 - **Double kill.** A second `kill` on one of the gone handles exits `0`.
-- **Not driven live.** Handle and usage rejections (exit 2), a missing `cwd`, an argument containing a space, a lone-word command, a session name tmux would rewrite, ten concurrent spawns, a config backend with no file, and a PATH with no multiplexer. `tests/mux.test.sh` proves those against a scratch repo and sessions it owns.
-- **Proof.** `~/.smile-verify/<runid>/mux.log` holds the window listings before spawn, after spawn, and after kill, plus every handle and verdict. It prints `PASS mux (runtime=<r>)` or `FAIL mux: <reason>`.
+- **Not driven live.** Handle and usage rejections (exit 2), a missing `cwd`, an argument containing a space, a lone-word command, a session name tmux would rewrite, ten concurrent spawns, a config backend with no file, and a PATH with no multiplexer. `tests/test_mux.py` proves those against a scratch repo and sessions it owns.
+- **Proof.** `~/.smile-verify/<runid>/mux.log` holds the window listings before spawn, after spawn, and after kill, plus every handle and verdict. It prints `PASS mux` or `FAIL mux: <reason>`.
 
 ## Gotchas
 
@@ -35,5 +35,5 @@ Preconditions:
 - The window count is asserted as a delta, not as three. The fixture session already has the window `up` created.
 - cmux and Herdr open visible panes on the user's screen, and their backend files land in S8. Until then a handle or a config naming them exits 2 with `unknown backend <name>`.
 - With the multiplexer off PATH every verb exits 1 with `smile mux: missing tmux not on PATH`. Exit 0 from `kill` means the pane is known to be gone, never that the tool could not be asked.
-- `--runtime py` against a stamp without `smile/py/backends/tmux.py` prints `NOT IMPLEMENTED mux` and exits 2 before it touches the config.
+- A stamp without `smile/py/backends/tmux.py` prints `NOT IMPLEMENTED mux` and exits 2 before it touches the config.
 - The helper edits the fixture's `smile.config.yaml` and commits it, as the `doctor` feature does.

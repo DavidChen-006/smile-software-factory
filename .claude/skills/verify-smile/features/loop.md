@@ -27,11 +27,11 @@ Preconditions:
 - A fixture with `install: stamped`, beads A and B seeded, B blocked by A.
 - `SMILE_WORKER_CMD` points at `scripts/stub-worker`. The helper sets it; nothing else spawns workers in S3.
 
-- **Claim tick.** Run `verify-smile feature loop --runtime bash`. The helper sets `runtime: <r>` in the fixture config, runs `smile init` so the treehouse pool and `.factory/` exist, seeds a third bead C with no blockers so exactly A and C are ready, then runs `<fixture>/smile/smile run --once`. Each of A and C has exactly one `bead.claimed`, one `worktree.acquired`, and one `pane.spawned` in `.factory/events.jsonl`, and `.factory/runs/` holds two run state files.
+- **Claim tick.** Run `verify-smile feature loop`. The helper runs `smile init` so the treehouse pool and `.factory/` exist, seeds a third bead C with no blockers so exactly A and C are ready, then runs `<fixture>/smile/smile run --once`. Each of A and C has exactly one `bead.claimed`, one `worktree.acquired`, and one `pane.spawned` in `.factory/events.jsonl`, and `.factory/runs/` holds two run state files.
 - **Pull requests.** The helper polls `gh pr list --state open --json number,body` for up to 200 seconds until two open PRs carry a `Bead: <id>` trailer for A and C. The GitHub API lags behind the worker's `gh pr create`, so this is a poll, not a single read.
 - **Reap tick.** The helper closes A, C, and B with `bd close` (in S4 the review lane closes them), then runs `smile run --once` again. Each of A and C has one `pane.reaped`, `.factory/runs/done/` holds two files, the log ends with `campaign.complete`, and `.factory/driver.pid` is gone.
 - **Not driven live.** The singleton refusal, the stale pid file, the `max_parallel` cap, the pause skip, crash respawn and escalation, the work order substitution, the worker argv and environment, and the trust edit. `tests/driver.test.sh` proves those against scratch repos with real bd and treehouse and a fake tmux.
-- **Proof.** `~/.smile-verify/<runid>/loop.log` holds both ticks, the PR list, and the last fifteen events. It prints `PASS loop (runtime=<r>)` or `FAIL loop: <reason>`, and `NOT IMPLEMENTED loop (no smile/<r>/run stamped)` with exit 2 when the runtime under test has no driver.
+- **Proof.** `~/.smile-verify/<runid>/loop.log` holds both ticks, the PR list, and the last fifteen events. It prints `PASS loop` or `FAIL loop: <reason>`, and `NOT IMPLEMENTED loop (no smile/py/run.py stamped)` with exit 2 when the stamp has no driver.
 
 ## Gotchas
 

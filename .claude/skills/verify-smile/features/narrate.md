@@ -20,7 +20,7 @@ Preconditions:
 
 - A fixture with `install: stamped` and stubs configured.
 
-- **Three calls.** Run `verify-smile feature narrate --runtime bash`. The helper runs the loop and calls `smile narrate` three times at different points, capturing each output.
+- **Three calls.** Run `verify-smile feature narrate`. The helper runs the loop and calls `smile narrate` three times at different points, capturing each output.
 - **No duplicates.** The concatenated outputs, sorted, equal the event log rendered once through the same formatter, sorted. No line appears twice.
 - **Empty call.** A fourth call after `campaign.complete` prints nothing and exits 0.
 - **Proof.** `~/.smile-verify/<runid>/narrate.log` holds the three outputs and the comparison.

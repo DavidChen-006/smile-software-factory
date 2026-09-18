@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# smile config get <key>: print one config value, the schema default when the file lacks the key.
-# Exit 2 without a key, 3 for a key outside the schema. Contract: docs/RUNTIME-CONTRACT.md section 2.
-set -euo pipefail
-. "$SMILE_ROOT/smile/bash/lib/config"
-[ "${1:-}" = get ] && [ $# -eq 2 ] || { printf 'usage: smile config get <key>\n' >&2; exit 2; }
-config_get "$2"

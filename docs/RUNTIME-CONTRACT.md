@@ -1,6 +1,6 @@
 # SMILE runtime contract
 
-The contract both runtimes implement. `templates/smile/bash/` and `templates/smile/py/` expose the same commands with the same stdout, exit codes, files, and events, so the verification harness drives either through the `runtime` config key and the bakeoff compares like with like. This document is normative for S1. Later spikes extend it; they do not change what is here without a spec revision.
+The contract the runtime implements. `templates/smile/py/` exposes the commands below with the stdout, exit codes, files, and events named here, and the verification harness drives them. This document is normative for S1. Later spikes extend it; they do not change what is here without a spec revision. It was written for two runtimes; Python won the bakeoff on 2026-09-18 and the bash runtime was removed, so every rule below is the py runtime's.
 
 Where `docs/SPEC.md` and the S1 brief differ, the brief is more specific and this contract follows it. Each such point is marked "Reconciled".
 
@@ -13,22 +13,18 @@ Where `docs/SPEC.md` and the S1 brief differ, the brief is more specific and thi
 1. With no arguments it prints `usage: smile <command> [args...]` to stderr and exits 1.
 2. It resolves the repo root by walking up from the shim's directory; it stops at the first directory that contains `smile.config.yaml` or a `.git` entry (file or directory). If that directory has no `smile.config.yaml`, exit 2 with a one-line stderr message. The shim is run by its stamped path `smile/smile`; invoking it through a symlink is unsupported.
 3. It exports `SMILE_ROOT=<repo root>` (absolute, no trailing slash) for the runtime.
-4. It reads `runtime` from `$SMILE_ROOT/smile.config.yaml` (empty or absent means `bash`) and execs:
-   - `bash`: `"$SMILE_ROOT/smile/bash/<command>" "$@"`. The command file must exist and be executable, else stderr error and exit 2.
-   - `py`: `python3 "$SMILE_ROOT/smile/py/smile.py" <command> "$@"`. The runtime runs on the `python3` PATH finds; its floor is Python 3.9 (the macOS system interpreter), so every module starts with `from __future__ import annotations` and uses no 3.10+ construct. `smile.py` must exist, else stderr error and exit 2. Unknown commands are the py runtime's job: print a one-line error to stderr and exit 2.
-   - any other value: stderr error, exit 2.
+4. It execs `python3 "$SMILE_ROOT/smile/py/smile.py" <command> "$@"`. The runtime runs on the `python3` PATH finds; its floor is Python 3.9 (the macOS system interpreter), so every module starts with `from __future__ import annotations` and uses no 3.10+ construct. `smile.py` must exist, else stderr error and exit 2. Unknown commands are the runtime's job: print a one-line error to stderr and exit 2.
 5. A command name containing `/` or starting with `.` is rejected with exit 2, so `smile lib/events` cannot run a library file.
 
-Rules for the runtimes that follow from this:
+Rules for the runtime that follow from this:
 
-- The bash runtime is one executable file per command at `smile/bash/<command>`. Shared code lives under `smile/bash/lib/` and is sourced, never executed. Subcommands (`smile config get`, `smile mux spawn`) are arguments to the command file.
-- The py runtime is `smile/py/smile.py` as the dispatcher plus modules beside it. It runs with the stdlib only.
+- The runtime is `smile/py/smile.py` as the dispatcher plus modules beside it. It runs with the stdlib only. Subcommands (`smile config get`, `smile mux spawn`) are arguments to the command.
 - Every command reads `SMILE_ROOT` from the environment and never recomputes it. Every path below is relative to `$SMILE_ROOT`.
-- Runtimes shell out to `git`, `gh`, `bd`, and `treehouse`; they never import their internals.
+- The runtime shells out to `git`, `gh`, `bd`, and `treehouse`; it never imports their internals.
 
 ## 2. Config
 
-File: `$SMILE_ROOT/smile.config.yaml`. Neither runtime uses a YAML library. The format is:
+File: `$SMILE_ROOT/smile.config.yaml`. The runtime uses no YAML library. The format is:
 
 - One `key: value` per line. A key line matches `^[A-Za-z0-9_.]+:`; the key is not trimmed. The value is everything after the first `:` with surrounding whitespace trimmed; whitespace trimmed from values is ASCII space, tab, and CR only. A line with leading whitespace or whitespace before the colon is neither a key nor a comment and is ignored. The file is UTF-8 regardless of locale. Keys may contain dots.
 - A line whose first non-blank character is `#` is a comment. Blank lines are allowed. No inline comments, no nesting, no quoting.
@@ -38,7 +34,6 @@ Keys, defaults, and meaning. This table is the schema; a key not in it is unknow
 
 | key | default | meaning |
 | --- | --- | --- |
-| `runtime` | `bash` | Runtime the shim dispatches to: `bash` or `py`. |
 | `backend` | empty | Pane backend: `tmux`, `cmux`, or `herdr`. Empty means auto-detect in that order. |
 | `worker.model` | `opus` | Claude model the driver launches each worker with. |
 | `worker.permission_mode` | `acceptEdits` | Permission mode the worker runs under. |
@@ -66,11 +61,11 @@ Keys, always present, in this order: `ts`, `event`, `bead`, `pr`, `sha`, `actor`
 | `actor` | string or null | Who caused it. Conventions: `driver`, `worker`, `reviewer`, `watchtower`, `human`. |
 | `detail` | string or null | Free text. Keep it short; see the line-size rule. |
 
-Encoding: Python `json.dumps(obj, separators=(",", ":"), ensure_ascii=False)`. Escape exactly `"` as `\"`, `\` as `\\`, U+0008/0009/000A/000C/000D as `\b \t \n \f \r`, every other code point below U+0020 as `\u00XX` with lowercase hex; escape nothing else, including `/` and U+007F; write UTF-8. Both runtimes must produce byte-identical lines for the same inputs and timestamp. Invalid UTF-8 bytes in an argument or in the config file pass through unchanged (Python: `surrogateescape` on decode and encode). Example:
+Encoding: Python `json.dumps(obj, separators=(",", ":"), ensure_ascii=False)`. Escape exactly `"` as `\"`, `\` as `\\`, U+0008/0009/000A/000C/000D as `\b \t \n \f \r`, every other code point below U+0020 as `\u00XX` with lowercase hex; escape nothing else, including `/` and U+007F; write UTF-8. Invalid UTF-8 bytes in an argument or in the config file pass through unchanged (Python: `surrogateescape` on decode and encode). Example:
 
 	{"ts":"2026-09-18T06:39:00Z","event":"bead.claimed","bead":"sv-1","pr":null,"sha":null,"actor":"driver","detail":"tick 3"}
 
-Append rule: open the file in append mode and write the whole line, including the trailing newline, in one call. Python: `os.write` on a fd opened `O_WRONLY|O_APPEND|O_CREAT`. Bash: a single `printf '%s\n' "$line" >> file`. A line including its trailing newline is at most 4096 bytes (POSIX `PIPE_BUF`). When the line would be longer, `detail` is cut to the longest prefix of code points for which the encoded line fits; the cut never splits a UTF-8 sequence. When the other six fields alone exceed the limit the line is written as is. Never rewrite or truncate the file. Create `.factory/` and the file if absent.
+Append rule: open the file in append mode and write the whole line, including the trailing newline, in one call. Python: `os.write` on a fd opened `O_WRONLY|O_APPEND|O_CREAT`. A line including its trailing newline is at most 4096 bytes (POSIX `PIPE_BUF`). When the line would be longer, `detail` is cut to the longest prefix of code points for which the encoded line fits; the cut never splits a UTF-8 sequence. When the other six fields alone exceed the limit the line is written as is. Never rewrite or truncate the file. Create `.factory/` and the file if absent.
 
 The seventeen event names, from the spec's "The bus":
 
@@ -79,7 +74,7 @@ The seventeen event names, from the spec's "The bus":
 	bead.closed  pane.reaped  worker.crashed  watch.escalation
 	driver.paused  driver.resumed  campaign.complete
 
-Deferred to S3 (finding, not implemented in S1): the spec's Design says worktrees resolve the log path through the main checkout so every process writes one file. In S1 the path is literally `$SMILE_ROOT/.factory/events.jsonl` as the brief states; the driver spike must either pass the main checkout as `SMILE_ROOT` to workers or add a git-common-dir resolution to the events library in both runtimes.
+Deferred to S3 (finding, not implemented in S1): the spec's Design says worktrees resolve the log path through the main checkout so every process writes one file. In S1 the path is literally `$SMILE_ROOT/.factory/events.jsonl` as the brief states; the driver spike must either pass the main checkout as `SMILE_ROOT` to workers or add a git-common-dir resolution to the events module.
 
 ## 4. Commands (S1)
 
@@ -123,7 +118,7 @@ When `bd init` or `treehouse init` fails, init prints one stderr line, exits 1, 
 
 **event.** Arguments after `<name>` are `key=value` tokens in any order; the value is everything after the first `=`, untrimmed, and may contain spaces when quoted by the shell. An empty value is the empty string, not null. A key given more than once is exit 2. `ts` is taken at append time. `actor` defaults to null when not given.
 
-**config get.** Parse per section 2. The lookup order is file value, then default. Both runtimes carry the same defaults table as section 2; the template file is not the source of defaults at runtime.
+**config get.** Parse per section 2. The lookup order is file value, then default. The runtime carries the defaults table of section 2; the template file is not the source of defaults at runtime.
 
 **pause and resume.** The events carry `actor` from `$SMILE_ACTOR` when it is set and non-empty, else `human`, and `detail` null. Everything else null.
 
@@ -150,14 +145,14 @@ When `bd init` or `treehouse init` fails, init prints one stderr line, exits 1, 
 | --- | --- |
 | 0 | ok |
 | 1 | a check failed (`doctor` with a missing tool) |
-| 2 | usage: unknown command, bad arguments, unknown event name, bad runtime |
+| 2 | usage: unknown command, bad arguments, unknown event name |
 | 3 | unknown config key |
 
 ## 6. Installer
 
 `python3 install.py <target-repo> [--force]` at the SMILE repo root, stdlib only. It copies the `templates/` tree into the target, preserving relative paths and file modes, skipping `__pycache__/` and `.DS_Store`. One stdout line per file, sorted by path components: `stamped <path>` (new), `unchanged <path>` (byte-identical; mode re-applied), `drifted <path>, use --force` (differs, left alone), `replaced <path>` (differs, `--force`), or `drifted <path>, symlink` (the destination is a symlink; counted as drift even with `--force`, never written through). A template that is itself a symlink is skipped with one stderr line. Then one line for `.gitignore`: `appended .gitignore` when it added `.factory/`, `unchanged .gitignore` when the line was present. Exit 1 when any file drifted without `--force` or on an I/O error (one stderr line), 2 on usage error, else 0. It touches nothing outside the templates image plus `.gitignore`.
 
-The runtime writers add their files under `templates/smile/bash/` and `templates/smile/py/`; the installer picks them up with no change. Executable bits are taken from the file mode in the checkout, so `chmod +x` the bash command files and commit the mode.
+The runtime writers add their files under `templates/smile/py/`; the installer picks them up with no change. Executable bits are taken from the file mode in the checkout, so `chmod +x` an entry script and commit the mode.
 
 ## 7. Mux seam (S2)
 
@@ -171,7 +166,7 @@ The driver spawns and reaps panes only through `smile mux`. One backend file per
 
 Handle grammar: `<backend>:<rest>`, where `<backend>` is `tmux`, `cmux`, or `herdr` and `<rest>` is opaque to the caller. A handle is a single line with no whitespace, and both parts are non-empty. A `<rest>` the backend cannot parse is a malformed handle, exit 2, the same as a handle with no colon.
 
-Edge rules, identical in both runtimes:
+Edge rules:
 
 | case | behaviour |
 | --- | --- |
@@ -182,7 +177,7 @@ Edge rules, identical in both runtimes:
 | `alive` or `kill` when the tool is not on PATH | one stderr line `missing <tool> not on PATH`, exit 1, no traceback. |
 | a leading dash in `<command>` or its args (`--foo`) | passed through unchanged after `--`. |
 
-Backend layout: bash `smile/bash/mux.d/<backend>` (sourced by `smile/bash/mux`), Python `smile/py/backends/<backend>.py`. A backend name is checked against the three names before it becomes a path component, so `../lib/config` or `TMUX` is never resolved to a file; a name outside the three, or one of the three whose file has not landed, is `unknown backend <name>`, exit 2.
+Backend layout: `smile/py/backends/<backend>.py`. A backend name is checked against the three names before it becomes a path component, so `../config` or `TMUX` is never resolved to a file; a name outside the three, or one of the three whose file has not landed, is `unknown backend <name>`, exit 2.
 
 The spawned command runs with `<cwd>` as its working directory and inherits the caller's environment. `<command>` and its args are passed to the tool as one argv, never re-joined through a shell, so spaces in arguments survive. tmux hands a lone word to `sh -c`, so when exactly one word is given the backend prefixes `env`, which execs it directly; a lone word with a space is therefore a program that does not exist, not a shell string. `<name>` labels the pane for humans; it need not be unique.
 
@@ -196,15 +191,15 @@ The cmux and Herdr backends are specified in S8 against the same verbs and handl
 
 `smile run [--once] [--interval <seconds>]` is the loop. Default interval 60. `--once` runs one tick and exits. `<seconds>` must match `^[1-9][0-9]*$` (ASCII digits, no leading zero), else exit 2; a repeated flag is allowed and the last value wins; `--interval=5` and any other argument are exit 2. `max_parallel` from config must match the same pattern, else one stderr line `bad max_parallel <value>` and exit 1 before anything is touched.
 
-**Factory directory.** From S3 on, every runtime resolves the factory directory as the parent of `git -C "$SMILE_ROOT" rev-parse --path-format=absolute --git-common-dir`, so a linked worktree of the repo writes the same `.factory/` as the main checkout. For a plain checkout that is `$SMILE_ROOT/.factory`. The event log, pause file, pid file, and run state below all live there. Both runtimes update their S1 code, `init` included (it creates that `.factory/`, not `$SMILE_ROOT/.factory`), to use this resolution; `smile status`, `pause`, `resume`, and `event` run identically from a worktree.
+**Factory directory.** From S3 on, the runtime resolves the factory directory as the parent of `git -C "$SMILE_ROOT" rev-parse --path-format=absolute --git-common-dir`, so a linked worktree of the repo writes the same `.factory/` as the main checkout. For a plain checkout that is `$SMILE_ROOT/.factory`. The event log, pause file, pid file, and run state below all live there. The runtime updates its S1 code, `init` included (it creates that `.factory/`, not `$SMILE_ROOT/.factory`), to use this resolution; `smile status`, `pause`, `resume`, and `event` run identically from a worktree.
 
-**Singleton.** `.factory/driver.pid` holds the driver's pid. It is created atomically with the pid already inside: write `<pid>\n` to a temporary file in the same directory and hard-link it to `driver.pid` (`os.link`), so the name never exists empty (an `O_EXCL` create leaves a moment where a racing driver reads an empty file as stale). When the file already exists the driver reads it: a positive integer naming a live process means a second `smile run`, which prints one stderr line ending `driver already running (pid <n>)` (each runtime keeps its own `smile: ` or `smile run: ` prefix; stderr text is not byte-contractual, stdout and exit codes are) and exits 1; anything else (dead pid, non-positive, unparsable) is stale, so the driver removes it and creates its own exclusively, once. The file is removed on every exit, including SIGINT and SIGTERM, where the driver prints one stderr line `driver stopped` and exits 1 with no traceback; removal tolerates the file being already gone.
+**Singleton.** `.factory/driver.pid` holds the driver's pid. It is created atomically with the pid already inside: write `<pid>\n` to a temporary file in the same directory and hard-link it to `driver.pid` (`os.link`), so the name never exists empty (an `O_EXCL` create leaves a moment where a racing driver reads an empty file as stale). When the file already exists the driver reads it: a positive integer naming a live process means a second `smile run`, which prints one stderr line ending `driver already running (pid <n>)` (the prefix is the runtime's own; stderr text is not byte-contractual, stdout and exit codes are) and exits 1; anything else (dead pid, non-positive, unparsable) is stale, so the driver removes it and creates its own exclusively, once. The file is removed on every exit, including SIGINT and SIGTERM, where the driver prints one stderr line `driver stopped` and exits 1 with no traceback; removal tolerates the file being already gone.
 
 **Start.** The driver appends `campaign.start` with `actor` `driver` and `detail` the interval only when `.factory/runs/` holds no live run state file (a fresh campaign); a driver that resumes over live runs, including a second `--once`, appends nothing. Then it runs ticks until `campaign.complete` or `--once`.
 
 **Working directory.** The driver runs every tool (`bd`, `treehouse`, `git`, `smile mux`) with the main checkout (the factory directory's parent) as working directory, wherever `smile run` was started from, so a driver started in a linked worktree or a subdirectory claims the same beads. `SMILE_ROOT` stays whatever the shim resolved. No environment variable overrides the factory directory.
 
-**Tick, in this order.** Bead status for step 1 is read once per tick from `bd list --all --json`, not one `bd show` per run file; when that call fails the tick aborts before reap with one stderr line and exit 1, so a bd outage never turns finished workers into crashes. A pane still alive whose bead is already closed is left alone and reaped on the tick after it exits. `bd show <id> --json` returns a one-element JSON list; both runtimes read element 0.
+**Tick, in this order.** Bead status for step 1 is read once per tick from `bd list --all --json`, not one `bd show` per run file; when that call fails the tick aborts before reap with one stderr line and exit 1, so a bd outage never turns finished workers into crashes. A pane still alive whose bead is already closed is left alone and reaped on the tick after it exits. `bd show <id> --json` returns a one-element JSON list; the runtime reads element 0.
 
 1. Reap. For each run state file in `.factory/runs/<bead>.json`, a file that is not valid JSON, lacks one of the six keys, or names a bead `bd list --all --json` does not list is moved to `.factory/runs/crashed/` with one `worker.crashed` event (`bead` the file's basename, `detail` `unreadable`) and the tick continues; `smile mux alive` exiting 2 counts as dead. Otherwise: when `smile mux alive <handle>` is 1 and the bead's status is `closed`, run `smile mux kill <handle>` (a lingering dead window under a user's global `remain-on-exit on` is removed here), then `treehouse return --force <worktree>`, append `pane.reaped` (`bead`, `detail` the handle), and move the state file to `.factory/runs/done/`. When the pane is dead and the bead is not closed, append `worker.crashed` (`bead`, `detail` `attempt <n>`); if `attempts` is 1, respawn: no new claim, no new worktree, no `bead.claimed` or `worktree.acquired`; the run state file is rewritten with `attempts` 2 first, then the same work order is spawned again per step 3 and a second `pane.spawned` carries the new handle and the file gets the new handle and a fresh `spawned_at` (a respawn that fails is exit 1 like any spawn failure, and the file already says 2, so the next tick escalates); if `attempts` is 2, append a second `worker.crashed` with `detail` `escalated`, move the state file to `.factory/runs/crashed/`, and leave the bead claimed.
 2. Review. `review_pending()` is a hook point that S4 fills. In S3 it does nothing.
@@ -213,9 +208,9 @@ A failure inside step 3 after the claim (`treehouse get`, the order, the trust e
 
 4. Complete. When `bd list --json` (open, in_progress, blocked) is empty and no run state file is live, append `campaign.complete`, remove the pid file, exit 0.
 
-**Worker command.** Default argv: `claude --model <worker.model> --permission-mode <worker.permission_mode> <order text>` where the order text is the file contents as one argument, byte for byte, trailing newline included (bash: `text=$(cat "$order"; printf x); text=${text%x}`). When `SMILE_WORKER_CMD` is set and non-empty, its value is split on whitespace into argv with no glob expansion (bash: `set -f` or `read -ra`) and the order path is appended as the last argument. The four variables `SMILE_BEAD`, `SMILE_BEAD_TITLE`, `SMILE_REPO` (the main checkout, the factory directory's parent), and `SMILE_BASE_BRANCH` reach the worker on the command line: the argv handed to `smile mux spawn` is `env SMILE_BEAD=<id> SMILE_BEAD_TITLE=<title> SMILE_REPO=<path> SMILE_BASE_BRANCH=<branch> <worker argv...>`, in that order, because a tmux window inherits the server's environment, not the spawning client's. The pane's working directory is the worktree.
+**Worker command.** Default argv: `claude --model <worker.model> --permission-mode <worker.permission_mode> <order text>` where the order text is the file contents as one argument, byte for byte, trailing newline included. When `SMILE_WORKER_CMD` is set and non-empty, its value is split on whitespace into argv with no glob expansion and the order path is appended as the last argument. The four variables `SMILE_BEAD`, `SMILE_BEAD_TITLE`, `SMILE_REPO` (the main checkout, the factory directory's parent), and `SMILE_BASE_BRANCH` reach the worker on the command line: the argv handed to `smile mux spawn` is `env SMILE_BEAD=<id> SMILE_BEAD_TITLE=<title> SMILE_REPO=<path> SMILE_BASE_BRANCH=<branch> <worker argv...>`, in that order, because a tmux window inherits the server's environment, not the spawning client's. The pane's working directory is the worktree.
 
-**Trust.** Before spawning, the driver sets `projects["<worktree absolute path>"].hasTrustDialogAccepted` to `true` in `~/.claude.json`, creating the project entry when absent and leaving every other key untouched. Both runtimes may use python3 for this JSON edit. When the file is absent the driver creates it with only that entry. The file is written as `json.dump(..., indent=2, ensure_ascii=False)` plus a trailing newline, to `~/.claude.json.tmp` first and then renamed over the original, so a kill mid-write cannot empty the file. The project key is the worktree path exactly as `treehouse get` printed it. The driver reads the file once at start, before the pid file: absent is fine, a JSON object is fine, anything else is one stderr line `bad ~/.claude.json` and exit 1 before anything is touched. A read that fails mid-campaign (Claude Code rewrites the file) is a step 3 failure for that bead, handled as above; the driver never writes a file it could not parse.
+**Trust.** Before spawning, the driver sets `projects["<worktree absolute path>"].hasTrustDialogAccepted` to `true` in `~/.claude.json`, creating the project entry when absent and leaving every other key untouched. When the file is absent the driver creates it with only that entry. The file is written as `json.dump(..., indent=2, ensure_ascii=False)` plus a trailing newline, to `~/.claude.json.tmp` first and then renamed over the original, so a kill mid-write cannot empty the file. The project key is the worktree path exactly as `treehouse get` printed it. The driver reads the file once at start, before the pid file: absent is fine, a JSON object is fine, anything else is one stderr line `bad ~/.claude.json` and exit 1 before anything is touched. A read that fails mid-campaign (Claude Code rewrites the file) is a step 3 failure for that bead, handled as above; the driver never writes a file it could not parse.
 
 **Events per bead, in order, in S3 with the stub worker and no review lane:** `bead.claimed`, `worktree.acquired`, `pane.spawned`, then the worker's own `pr.opened` is S4's business; S3 ends at `pane.spawned` and the reap path.
 

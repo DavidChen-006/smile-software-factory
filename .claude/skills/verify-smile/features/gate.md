@@ -23,7 +23,7 @@ Preconditions:
 
 - A fixture with `install: stamped` and stubs configured.
 
-- **Hold.** Run `verify-smile feature gate --runtime bash`. The helper runs `smile gate all`, then the loop. After the `review.verdict` event for bead A, `gh pr view <A-pr> --json state,labels` shows state `OPEN` and a label `smile:approved`. `bd list --json` still shows A `open`.
+- **Hold.** Run `verify-smile feature gate`. The helper runs `smile gate all`, then the loop. After the `review.verdict` event for bead A, `gh pr view <A-pr> --json state,labels` shows state `OPEN` and a label `smile:approved`. `bd list --json` still shows A `open`.
 - **Release.** The helper runs `gh pr merge <A-pr> --squash`. On the next tick the event log gains `pr.merged` and `bead.closed` for A, and B becomes ready.
 - **Status.** `smile gate status` prints `mode: all` before and the held PR number while it is held.
 - **Proof.** `~/.smile-verify/<runid>/gate.log` holds the PR view before and after the manual merge.

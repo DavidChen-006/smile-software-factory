@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# smile event <name> [bead=<id>] [pr=<n>] [sha=<s>] [actor=<a>] [detail=<text>]: append one event
-# line to .factory/events.jsonl. Exit 2 on a bad name or argument. Contract: docs/RUNTIME-CONTRACT.md section 3.
-set -euo pipefail
-. "$SMILE_ROOT/smile/bash/lib/events"
-[ $# -ge 1 ] || { printf 'usage: smile event <name> [bead=<id>] [pr=<n>] [sha=<s>] [actor=<a>] [detail=<text>]\n' >&2; exit 2; }
-event_append "$@"
