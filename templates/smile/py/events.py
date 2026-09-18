@@ -1,4 +1,6 @@
 """The event log at .factory/events.jsonl (contract section 3)."""
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import json
 import os
 from datetime import datetime, timezone

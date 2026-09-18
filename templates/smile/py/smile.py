@@ -2,6 +2,8 @@
 
 One function per command, all listed in COMMANDS. Contract: docs/RUNTIME-CONTRACT.md in the SMILE repo.
 """
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import json
 import os
 import re

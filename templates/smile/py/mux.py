@@ -4,6 +4,8 @@ One backend module per pane tool in backends/, each exposing spawn(session, name
 alive(rest) -> bool, and kill(rest) -> None. This file owns the handle grammar `<backend>:<rest>`,
 so a backend never sees or builds a handle: spawn returns the rest and alive and kill are given it.
 """
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import importlib
 import importlib.util
 import os
