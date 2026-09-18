@@ -257,7 +257,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature loop --runtime <r>` runs the driver against the fixture with the stub worker and the stub reviewer until `campaign.complete` or a 10 minute timeout. Pass when both beads are closed, both pull requests are merged, and the event sequence per bead is claimed, worktree, spawned, pr.opened, review.started, review.verdict, pr.merged, bead.closed, pane.reaped.
+- [ ] `verify-smile feature loop --runtime <r>` seeds two beads in the fixture, runs `smile run --once` with the stub worker, and asserts two `bead.claimed`, two `worktree.acquired`, two `pane.spawned`, two run files, and two pull requests with `Bead:` trailers in `gh pr list`; then closes both beads with `bd close`, runs `smile run --once` again, and asserts two `pane.reaped` and `campaign.complete`. Pass when it prints `PASS`. The full sequence through review and merge is S4's live box.
 
 **Review gate.** None. S3 is not review-gated.
 
