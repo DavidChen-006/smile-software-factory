@@ -1,4 +1,6 @@
 """smile.config.yaml: the schema table and the flat `key: value` parser (contract section 2)."""
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import re
 
 # key -> default. This table is the schema; a key not in it is unknown.

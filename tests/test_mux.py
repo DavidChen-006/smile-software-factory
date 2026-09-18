@@ -3,6 +3,8 @@
 Every window lives in one dedicated session, smile-test-<pid>, killed in tearDownClass.
 Run from the repo root: python3 -m unittest tests.test_mux -v
 """
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import os
 import re
 import shutil

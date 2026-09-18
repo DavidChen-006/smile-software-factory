@@ -2,6 +2,8 @@
 
 Run from the repo root: python3 -m unittest tests.test_core -v
 """
+from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
+
 import json
 import os
 import re
