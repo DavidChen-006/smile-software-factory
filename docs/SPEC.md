@@ -47,7 +47,7 @@ The driver launches a worker in its worktree with the configured worker model an
 
 ### The reviewer contract
 
-The driver runs the reviewer headless with the normal signed-in Claude. The reviewer runs inside a detached worktree pinned at the pull request head and receives the reviewer skill, the diff, the frozen spec, and any open issue thread. It answers `APPROVE` or `REQUEST CHANGES` with findings. Only verified findings block. On `REQUEST CHANGES` the driver opens one GitHub issue per blocking finding with the label `review` and comments on the pull request. On `APPROVE` with `merge` set to `auto`, the driver squash-merges the pull request and closes the bead. With `merge` set to `human`, or when the bead carries the label `human-gate`, the driver labels the pull request `smile:approved` and closes the bead when a human merges it. The config key `reviewer.models` is a list. One review runs per model and a lead-judgment step merges the findings. The default list has one entry.
+The driver runs the reviewer headless with the normal signed-in Claude. The reviewer runs inside a detached worktree pinned at the pull request head and receives the reviewer skill, the diff, the frozen spec, and any open issue thread. It answers `APPROVE` or `REQUEST CHANGES` with findings. Only verified findings block. On `REQUEST CHANGES` the driver opens one GitHub issue per blocking finding with the label `review`, whose body carries the line `PR: #<n>` on its own line, and comments on the pull request with the issue links. On `APPROVE` with `merge` set to `auto`, the driver squash-merges the pull request and closes the bead. With `merge` set to `human`, or when the bead carries the label `human-gate`, the driver labels the pull request `smile:approved` and closes the bead when a human merges it. The config key `reviewer.models` is a list. One review runs per model and a lead-judgment step merges the findings. The default list has one entry.
 
 ### Prerequisites
 
@@ -60,7 +60,7 @@ The driver runs the reviewer headless with the normal signed-in Claude. The revi
 - `smile/smile`, the entry script. It reads `runtime` from the config and dispatches to `smile/bash/` or `smile/py/`.
 - `smile/bash/` and `smile/py/`, the two runtimes. Each exposes the same commands. `doctor`, `init`, `run`, `review`, `gate`, `audit`, `pause`, `resume`, `status`, and `mux`.
 - `.claude/skills/` with campaign, preflight, watchtower, smile-code-writer, smile-code-reviewer, test-writer, draftspec, grilling, and architect.
-- `smile.config.yaml` with the keys `runtime`, `backend`, `worker.model`, `reviewer.models`, `max_parallel`, `watchtower`, `merge`, and `base_branch`.
+- `smile.config.yaml` with the keys `runtime`, `backend`, `worker.model`, `worker.permission_mode`, `reviewer.models`, `max_parallel`, `watchtower`, `merge`, and `base_branch`.
 - `prompts/worker.md`, `prompts/reviewer.md`, and `prompts/watchtower.md`.
 - A `.gitignore` line for `.factory/`.
 
@@ -121,7 +121,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 - [ ] Create `.claude/skills/verify-smile/SKILL.md`.
 - [ ] Create `.claude/skills/verify-smile/features/README.md` and one file per feature. `install.md`, `doctor.md`, `loop.md`, `review.md`, `gate.md`, `watchtower.md`.
 - [ ] Create `.claude/skills/verify-smile/scripts/verify-smile`, the helper.
-- [ ] Create `.claude/skills/verify-smile/scripts/stub-worker`, a script that behaves as a worker. It writes one file, commits on `smile/<bead-id>`, opens a pull request with the bead trailer, and exits.
+- [ ] Create `.claude/skills/verify-smile/scripts/stub-worker`, a script that behaves as a worker. It writes one file, commits on `smile/<bead-id>`, opens a pull request with the bead trailer, and exits. On a rerun where the pull request exists, it appends a line, commits with `addresses #<issue>` for each open `review` issue naming that pull request, pushes, and exits.
 - [ ] Create `.claude/skills/verify-smile/scripts/stub-reviewer`, a script that answers `APPROVE` for any diff. The `--real-review` flag of the helper uses the real reviewer instead.
 
 **Build.**
@@ -142,7 +142,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] Run the generated skill's own instructions once end to end. Launch, doctor, drive the `install` feature against an empty stamp, capture evidence, clean up. Pass when the evidence directory lists `events.jsonl` after cleanup.
+- [ ] Run the generated skill's own instructions once end to end. Launch, doctor, drive the `install` feature against an empty stamp, capture evidence, clean up. Pass when the evidence directory lists `beads.json` and `prs.json` after cleanup and `beads.json` names both seeded beads. `events.jsonl` first exists after S1.
 
 **Review gate.** None. S0 is not review-gated.
 
@@ -244,7 +244,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 - [ ] Each tick, when `.factory/pause` is absent, the driver lists ready beads through `bd ready --json`, claims up to `max_parallel` minus running, acquires a worktree per claim through `treehouse get`, writes the work order from `prompts/worker.md` and the bead, spawns the worker through `smile mux spawn`, and logs `bead.claimed`, `worktree.acquired`, and `pane.spawned`.
 - [ ] Each tick the driver reaps panes whose bead is closed, returns their worktree through `treehouse return`, and logs `pane.reaped`.
 - [ ] A pane that dies with its bead still open is logged `worker.crashed`. The bead is respawned once. A second crash leaves the bead claimed and logs an escalation.
-- [ ] The worker command is `claude --model <worker.model> "<work order>"` by default and `SMILE_WORKER_CMD` when set, which the harness uses for the stub.
+- [ ] The worker command is `claude --model <worker.model> --permission-mode <worker.permission_mode> "<work order>"` by default and `SMILE_WORKER_CMD` when set, which the harness uses for the stub. Before spawning, the driver marks the worktree path trusted in `~/.claude.json`.
 - [ ] The driver exits with `campaign.complete` when no bead is open.
 
 **You see.**
@@ -492,9 +492,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 Open questions each fork settles by running something before building on it. Answers land here with the commit that recorded them.
 
-- How to pre-trust a folder for a headless-launched claude so no trust prompt blocks a worker pane. Open.
-- The exact Herdr CLI commands to open, probe, and close a tab. Open.
-- Whether `treehouse get` seeds `.worktreeinclude` files before the worker's first command. Open.
+- How to pre-trust a folder for a headless-launched claude so no trust prompt blocks a worker pane. Settled 2026-09-18. `~/.claude.json` holds `projects[<absolute path>].hasTrustDialogAccepted`. The driver sets it for each worktree path before spawning. The worker's permission mode is the config key `worker.permission_mode`, passed as `--permission-mode`.
+- The exact Herdr CLI commands to open, probe, and close a tab. Settled from `herdr 0.8.0 --help`, live JSON shape pending S8. `herdr tab create --cwd <path> --label <name> --no-focus` returns JSON with `tab_id`, `herdr pane run <pane_id> <command>` starts the command, `herdr pane get <pane_id>` probes, `herdr tab close <tab_id>` closes.
+- Whether `treehouse get` seeds `.worktreeinclude` files before the worker's first command. Open. The driver acquires with `treehouse get --lease --lease-holder <bead-id>`, which prints only the path, and releases with `treehouse return --force <path>`. Settled from `treehouse 2.0.1 --help`.
 - Whether `gh pr merge --squash` on a private repo from a script needs a `--admin` flag when no branch protection exists. Open.
 - Whether the driver's per-tick pull request scan through `gh pr list --json` stays under the GitHub secondary rate limit at a 60 second interval with 8 open pull requests. Open.
 
