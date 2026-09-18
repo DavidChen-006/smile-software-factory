@@ -16,12 +16,14 @@ sys.dont_write_bytecode = True  # no __pycache__ in the stamped repo; set before
 import config
 import events
 import mux
+import run
+import worktree
 
 # one Usage for the whole runtime; mux.py owns it because this file runs as __main__ and cannot be imported back
 from mux import Usage
 
 EVENT_FIELDS = ("bead", "pr", "sha", "actor", "detail")
-TOOL_ENV = {**os.environ, "BD_NON_INTERACTIVE": "1"}
+TOOL_ENV = worktree.TOOL_ENV  # bd must never open a prompt: one definition, shared with the driver
 
 
 def no_args(args: list[str]) -> None:
@@ -91,15 +93,17 @@ def write_file(path: str, data: bytes) -> None:
 
 def cmd_init(root: str, args: list[str]) -> int:
     no_args(args)
-    steps = (  # (thing, is present, create it)
-        (".beads", os.path.isdir, lambda p: run_tool(root, ["bd", "init", "--prefix", bead_prefix(root), "-q"])),
-        ("treehouse.toml", os.path.exists, lambda p: run_tool(root, ["treehouse", "init"])),
-        (".worktreeinclude", os.path.exists, lambda p: write_file(p, b".env\nsmile.config.yaml\n")),
-        (".factory", os.path.isdir, os.mkdir),
-        (".factory/events.jsonl", os.path.exists, lambda p: write_file(p, b"")),
+    factory = worktree.factory(root)  # the main checkout's .factory, even when init runs in a linked worktree
+    steps = (  # (thing, its path, is present, create it)
+        (".beads", f"{root}/.beads", os.path.isdir,
+         lambda p: run_tool(root, ["bd", "init", "--prefix", bead_prefix(root), "-q"])),
+        ("treehouse.toml", f"{root}/treehouse.toml", os.path.exists, lambda p: run_tool(root, ["treehouse", "init"])),
+        (".worktreeinclude", f"{root}/.worktreeinclude", os.path.exists,
+         lambda p: write_file(p, b".env\nsmile.config.yaml\n")),
+        (".factory", factory, os.path.isdir, os.mkdir),
+        (".factory/events.jsonl", f"{factory}/events.jsonl", os.path.exists, lambda p: write_file(p, b"")),
     )
-    for thing, present, create in steps:
-        path = f"{root}/{thing}"
+    for thing, path, present, create in steps:
         if present(path):
             print(f"exists {thing}")
         else:
@@ -138,9 +142,9 @@ def cmd_config(root: str, args: list[str]) -> int:
 
 def cmd_pause(root: str, args: list[str]) -> int:
     no_args(args)
-    os.makedirs(f"{root}/.factory", exist_ok=True)
+    os.makedirs(worktree.factory(root), exist_ok=True)
     try:
-        os.close(os.open(f"{root}/.factory/pause", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+        os.close(os.open(f"{worktree.factory(root)}/pause", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
     except FileExistsError:
         print("already paused")
         return 0
@@ -152,7 +156,7 @@ def cmd_pause(root: str, args: list[str]) -> int:
 def cmd_resume(root: str, args: list[str]) -> int:
     no_args(args)
     try:
-        os.remove(f"{root}/.factory/pause")
+        os.remove(f"{worktree.factory(root)}/pause")
     except FileNotFoundError:
         print("not paused")
         return 0
@@ -206,6 +210,7 @@ COMMANDS = {
     "resume": cmd_resume,
     "status": cmd_status,
     "mux": mux.cmd_mux,
+    "run": run.cmd_run,
 }
 
 
