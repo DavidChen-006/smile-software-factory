@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# live-check: run this skill's own Launch, Doctor, Drive, Evidence, Cleanup once, end to end,
+# printing each command before its output. Used to prove the skill after a change.
+set -uo pipefail
+VS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/verify-smile
+ROOT="${SMILE_VERIFY_ROOT:-$HOME/.smile-verify}"
+owner=$(gh api user --jq .login)
+
+echo '$ verify-smile up'
+OUT=$("$VS" up 2>&1); echo "$OUT"
+R=$(echo "$OUT" | sed -n 's/^fixture ready \([^ ]*\) .*/\1/p')
+F=$(echo "$OUT" | sed -n 's/^fixture ready [^ ]* \(.*\)/\1/p')
+[ -n "$R" ] || { echo "up failed"; exit 1; }
+
+echo '$ verify-smile list'; "$VS" list
+echo "\$ gh repo view $owner/smile-verify-$R  (doctor)"
+gh repo view "$owner/smile-verify-$R" --json name,isPrivate --jq '"\(.name) private=\(.isPrivate)"'
+echo "\$ tmux has-session -t smile-verify-$R  (doctor)"
+tmux has-session -t "smile-verify-$R" && echo "session ok"
+echo '$ bd ready --json  (doctor)'
+(cd "$F" && bd ready --json | python3 -c 'import json,sys; print([i["id"] for i in json.load(sys.stdin)])')
+
+echo '$ verify-smile feature install --runtime bash'
+"$VS" feature install --runtime bash
+echo "\$ verify-smile down $R"
+"$VS" down "$R"
+echo "\$ ls $ROOT/$R"
+ls "$ROOT/$R"

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# stub-worker: stands in for a claude worker pane in verification runs.
+#
+# The driver runs it as: stub-worker <work-order-path>
+#   cwd   = the bead's worktree
+#   env   = SMILE_BEAD, SMILE_BEAD_TITLE, SMILE_REPO (main checkout), SMILE_BASE_BRANCH
+#
+# First run for a bead: writes one file named after the bead, commits on smile/<bead>, pushes,
+# and opens a PR whose body ends with the trailer "Bead: <bead>". Exit 0.
+#
+# Fix round (a PR already exists for smile/<bead>): finds open issues labeled `review` whose body
+# has a line `PR: #<n>` for that PR, appends one line to the file, commits "fix: address review"
+# with one `addresses #<issue>` body line per issue, pushes. Exit 0. No such issue: exit 4.
+#
+# Crash simulation: if SMILE_STUB_CRASH_BEADS (space-separated ids) names this bead, exit 3 the
+# first SMILE_STUB_CRASH_TIMES times (default 1). Counter: $SMILE_REPO/.factory/stub/crash-<bead>.count
+set -euo pipefail
+
+: "${SMILE_BEAD:?SMILE_BEAD unset}"
+: "${SMILE_REPO:?SMILE_REPO unset}"
+BASE="${SMILE_BASE_BRANCH:-main}"
+TITLE="${SMILE_BEAD_TITLE:-$SMILE_BEAD}"
+ORDER="${1:-}"
+
+crash_dir="$SMILE_REPO/.factory/stub"
+for b in ${SMILE_STUB_CRASH_BEADS:-}; do
+	if [ "$b" = "$SMILE_BEAD" ]; then
+		mkdir -p "$crash_dir"
+		f="$crash_dir/crash-$SMILE_BEAD.count"
+		n=$(cat "$f" 2>/dev/null || echo 0)
+		if [ "$n" -lt "${SMILE_STUB_CRASH_TIMES:-1}" ]; then
+			echo $((n + 1)) > "$f"
+			printf 'stub-worker: simulated crash %s of %s for %s\n' "$((n + 1))" "${SMILE_STUB_CRASH_TIMES:-1}" "$SMILE_BEAD" >&2
+			exit 3
+		fi
+	fi
+done
+
+branch="smile/$SMILE_BEAD"
+git_commit() { git -c user.email="stub-worker@localhost" -c user.name="stub-worker" commit -q "$@"; }
+
+pr=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+
+if [ -z "$pr" ]; then
+	git checkout -q -B "$branch"
+	printf 'bead %s\ntitle: %s\nwork order: %s\n' "$SMILE_BEAD" "$TITLE" "${ORDER:-none}" > "$SMILE_BEAD.txt"
+	git add "$SMILE_BEAD.txt"
+	git_commit -m "feat: $TITLE" -m "Bead: $SMILE_BEAD"
+	git push -q -u origin "$branch"
+	gh pr create --base "$BASE" --head "$branch" \
+		--title "$SMILE_BEAD: $TITLE" \
+		--body "$(printf 'Stub worker output for %s.\n\nBead: %s' "$TITLE" "$SMILE_BEAD")" >/dev/null
+	printf 'stub-worker: opened PR for %s on %s\n' "$SMILE_BEAD" "$branch"
+	exit 0
+fi
+
+# fix round. A freshly created issue can take a few seconds to show up in the label listing,
+# and a real worker polls anyway, so look up to 5 times.
+find_issues() {
+	gh issue list --label review --state open --json number,body | python3 -c '
+import json, sys
+pr = sys.argv[1]
+for i in json.load(sys.stdin):
+    lines = [l.rstrip("\r") for l in i["body"].splitlines()]
+    if f"PR: #{pr}" in lines:
+        print(i["number"])
+' "$pr"
+}
+issues=""
+for _ in 1 2 3 4 5; do
+	issues=$(find_issues)
+	[ -n "$issues" ] && break
+	sleep 3
+done
+if [ -z "$issues" ]; then
+	printf 'stub-worker: PR #%s exists for %s but no open review issue names it; nothing to fix\n' "$pr" "$SMILE_BEAD" >&2
+	exit 4
+fi
+git checkout -q "$branch"
+git pull -q --rebase origin "$branch"
+printf 'fix round for PR #%s\n' "$pr" >> "$SMILE_BEAD.txt"
+git add "$SMILE_BEAD.txt"
+body=""
+for i in $issues; do body="${body}addresses #${i}"$'\n'; done
+git_commit -m "fix: address review" -m "$body"
+git push -q origin "$branch"
+printf 'stub-worker: pushed fix for PR #%s addressing %s\n' "$pr" "$(printf '%s' "$issues" | tr '\n' ' ')"

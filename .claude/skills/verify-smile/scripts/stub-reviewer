@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# stub-reviewer: stands in for the headless claude reviewer in verification runs.
+#
+# The review lane runs it with the full prompt on stdin and reads the review on stdout.
+# Contract: stdout contains "Verdict: APPROVE" or "Verdict: REQUEST CHANGES"; on REQUEST CHANGES
+# each blocking finding is a line starting with "- [Critical]" or "- [Important]".
+#
+# Default: APPROVE. With SMILE_STUB_CHANGES_ONCE=1 it answers REQUEST CHANGES the first time it
+# sees a given PR (SMILE_PR) and APPROVE after. Counter: $SMILE_REPO/.factory/stub/review-<pr>.count
+set -euo pipefail
+
+cat >/dev/null   # consume the prompt; the stub does not read it
+
+if [ "${SMILE_STUB_CHANGES_ONCE:-0}" = "1" ]; then
+	: "${SMILE_REPO:?SMILE_REPO unset}"
+	: "${SMILE_PR:?SMILE_PR unset}"
+	d="$SMILE_REPO/.factory/stub"
+	mkdir -p "$d"
+	f="$d/review-$SMILE_PR.count"
+	n=$(cat "$f" 2>/dev/null || echo 0)
+	echo $((n + 1)) > "$f"
+	if [ "$n" -eq 0 ]; then
+		printf 'Stub review of PR #%s.\n\nVerdict: REQUEST CHANGES\n\n- [Critical] stub finding: add a line to the file\n\nPrinciples applied: none (stub)\n' "$SMILE_PR"
+		exit 0
+	fi
+fi
+
+printf 'Stub review.\n\nVerdict: APPROVE\n\nPrinciples applied: none (stub)\n'
