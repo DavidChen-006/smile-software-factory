@@ -68,7 +68,7 @@ The driver runs the reviewer headless with the normal signed-in Claude. The revi
 
 ### The bakeoff
 
-Both runtimes implement the same command set and emit the same events, so the verification harness drives either one through the `runtime` key. `docs/bakeoff.tsv` records one row per spike per runtime with these columns. `spike`, `runtime`, `verify_result`, `verify_seconds`, `lines`, `files`, `reader_load`, and `notes`. `reader_load` is the cold reviewer's score from 1 to 5 on the two axes in the minimize-reader-load principle, layers to trace and state to hold, averaged. After S4 the orchestrator writes a recommendation in Appendix E and David picks the runtime. The other runtime is deleted before S5 begins.
+Both runtimes implement the same command set and emit the same events, so the verification harness drives either one through the `runtime` key. `docs/bakeoff.tsv` records one row per spike per runtime with these columns, measured by the orchestrator after both pull requests merge. `spike`, `runtime`, `verify_result`, `verify_seconds`, `lines`, `files`, `reader_load`, and `notes`. `reader_load` is the cold reviewer's score from 1 to 5 on the two axes in the minimize-reader-load principle, layers to trace and state to hold, averaged. After S4 the orchestrator writes a recommendation in Appendix E and David picks the runtime. The other runtime is deleted before S5 begins.
 
 ### Cuts
 
@@ -80,23 +80,23 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] Post this plan to David and continue with S0, which no design detail can invalidate. Fold his corrections into a revision before S1 starts.
 - [ ] Keep the trail in `docs/decisions.tsv` through `.claude/skills/show-me-your-work/scripts/log.sh`. One row per spike verdict, pivot, or gate.
-- [ ] Standing orders for every fork, pasted verbatim into every brief. Read `docs/SPEC.md` first. Write only inside the paths the brief names. Never merge. Never edit `docs/SPEC.md`. Run the named verify command and paste its output. Report deviations from the design as findings, not as silent fixes. Cite by name each pstack principle that shaped a choice.
+- [ ] Standing orders for every writer, pasted verbatim into every brief. Read `docs/SPEC.md` first. Write only inside the paths the brief names. Never merge. Never edit `docs/SPEC.md`. Run the named verify command and paste its output. Report deviations from the design as findings, not as silent fixes. Cite by name each pstack principle that shaped a choice. If a tool call is denied by the permission system, stop, do not work around it with another tool, and report the denial.
 - [ ] Post a status line to David at each spike merge. Spike, runtime, verdict, PR link.
 
 ### Spawn owners
 
-- [ ] One fork per spike per runtime, on the orchestrator's model at high effort. A fork inherits the chat, so the brief carries only the spike section, the standing orders, and the branch name.
-- [ ] Runtime spikes S1 to S4 spawn a bash fork and a Python fork in parallel from the same brief, per the arena skill.
-- [ ] S0, S5 to S9 spawn one fork each. S5 and later target the runtime David picked.
-- [ ] Each fork works on its own branch in its own treehouse worktree of this repo. Branch names are `spike/<id>-<runtime>` or `spike/<id>`.
+- [ ] One fresh agent per spike per runtime, at high effort, with a self-contained brief: the spike section, the contracts it must honor, the standing orders, conventions, file pointers, and the branch name. No inherited chat. David's call after S0: a good brief beats a fork.
+- [ ] Runtime spikes S1 to S4 spawn a bash writer and a Python writer in parallel from the same brief, per the arena skill. Shared runtime-neutral pieces (installer, shim, config format, `docs/RUNTIME-CONTRACT.md`) were written once first, in S1, so the two runtimes implement one contract.
+- [ ] S0, S5 to S9 spawn one writer each. S5 and later target the runtime David picked.
+- [ ] Each writer works on its own branch in an isolated git worktree of this repo. Branch names are `spike/<id>-<runtime>` or `spike/<id>`.
 - [ ] Dependencies. S1 after S0. S2 after S1. S3 after S2. S4 after S3. S5, S6, and S7 after S4 and the bakeoff decision, in parallel. S8 after S5. S9 after S6, S7, and S8.
 
 ### PR mechanics, for every spike
 
-- [ ] The fork commits through `~/.claude/skills/git-ops/scripts/commit.sh` with a conventional message and pushes through `push.sh`.
-- [ ] The fork opens the pull request with `gh pr create`. The body names what it built, the verify command and its output, deviations, and the principles it cited.
-- [ ] A fresh non-fork subagent reviews the pull request cold with `.claude/skills/interrogate/references/rubric.md` and `code-quality-review.md`, then the orchestrator applies `lead-judgment.md`. Findings with the category Act On go back to the fork as a follow-up commit.
-- [ ] The orchestrator reads the diff and the verify evidence itself before merging. A fork's summary is not evidence.
+- [ ] The writer commits through `~/.claude/skills/git-ops/scripts/commit.sh` with a conventional message and pushes through `push.sh`.
+- [ ] The writer opens the pull request with `gh pr create`. The body names what it built, the verify command and its output, deviations, and the principles it cited.
+- [ ] A fresh non-fork subagent reviews the pull request cold with `.claude/skills/interrogate/references/rubric.md` and `code-quality-review.md`, then the orchestrator applies `lead-judgment.md`. Findings with the category Act On go back to the writer as a follow-up commit.
+- [ ] The orchestrator reads the diff and the verify evidence itself before merging. A writer's summary is not evidence.
 
 ### Verdict and merge, for every spike
 
