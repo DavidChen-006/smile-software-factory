@@ -190,7 +190,8 @@ cmd_feature() {
 			"$name" "$runtime" "$real_review" "${backend:-default}" "$runid" "$(date -u +%FT%TZ)"
 		case "$name" in
 			install) feature_install "$runid" "$fixture" "$runtime" ;;
-			doctor|mux|loop|review|gate|watchtower|narrate)
+			doctor) feature_doctor "$runid" "$fixture" "$runtime" ;;
+			mux|loop|review|gate|watchtower|narrate)
 				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
 				exit 2 ;;
 			*) die "unknown feature '$name'; see features/README.md" ;;
@@ -215,6 +216,23 @@ feature_install() {
 		*)
 			printf 'FAIL install: stamp result %s\n' "$install"; return 1 ;;
 	esac
+}
+
+# feature_doctor: set `runtime: <r>` in the fixture config, run `smile doctor`, and assert exit 0
+# with exactly seven `ok ` lines. The transcript goes to the feature log through the caller's tee.
+feature_doctor() {
+	local runid="$1" fixture="$2" runtime="$3" out rc=0
+	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL doctor: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	grep -q '^runtime:' "$fixture/smile.config.yaml" || { printf 'FAIL doctor: no runtime line in config\n'; return 1; }
+	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
+	# commit the edit so the fixture's tree stays clean for later features
+	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
+	out=$("$fixture/smile/smile" doctor) || rc=$?
+	printf '%s\n--- exit %s\n' "$out" "$rc"
+	[ "$rc" -eq 0 ] || { printf 'FAIL doctor: exit %s\n' "$rc"; return 1; }
+	[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 7 ] || { printf 'FAIL doctor: expected seven lines\n'; return 1; }
+	[ "$(printf '%s\n' "$out" | grep -c '^ok ')" -eq 7 ] || { printf 'FAIL doctor: a line is not ok\n'; return 1; }
+	printf 'PASS doctor (runtime=%s)\n' "$runtime"
 }
 
 # ---------------------------------------------------------------- down

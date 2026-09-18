@@ -1,0 +1,74 @@
+# lib/events: append one line to .factory/events.jsonl (docs/RUNTIME-CONTRACT.md section 3).
+# Sourced, never run.
+
+# json_str <var> <text>: set <var> to <text> as a JSON string literal, escaped per the contract:
+# only \ " and code points below U+0020; everything else, including / and U+007F, passes through.
+json_str() {
+	local s="$2" h c
+	s="${s//\\/\\\\}"
+	s="${s//\"/\\\"}"
+	s="${s//$'\b'/\\b}"; s="${s//$'\t'/\\t}"; s="${s//$'\n'/\\n}"; s="${s//$'\f'/\\f}"; s="${s//$'\r'/\\r}"
+	case "$s" in *[[:cntrl:]]*)
+		for h in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f; do
+			printf -v c "\\x$h"; s="${s//$c/\\u00$h}"
+		done ;;
+	esac
+	printf -v "$1" '"%s"' "$s"
+}
+
+# bytelen <var> <text>: byte length. utf8_len / utf8_prefix <var> <text> [<n>]: code-point length and
+# first <n> code points. bash counts by the current locale, and keeps the old one silently when a
+# locale is missing, so UTF8_LOCALE is probed once: C.UTF-8 (Linux, macOS 13+) else en_US.UTF-8 (every macOS).
+bytelen() { local LC_ALL=C; printf -v "$1" '%s' "${#2}"; }
+utf8_len() { local LC_ALL="$UTF8_LOCALE"; printf -v "$1" '%s' "${#2}"; }
+utf8_prefix() { local LC_ALL="$UTF8_LOCALE"; printf -v "$1" '%s' "${2:0:$3}"; }
+UTF8_LOCALE=C.UTF-8
+utf8_len _n 'é'; [ "$_n" -eq 1 ] || UTF8_LOCALE=en_US.UTF-8
+
+# event_append <name> [bead=<id>] [pr=<n>] [sha=<s>] [actor=<a>] [detail=<text>]
+# Validates the arguments as `smile event` does (return 2 with one stderr line), then appends one
+# line in one write. Unset fields are null. `detail` is cut to the longest prefix of code points
+# that keeps the line, with its newline, within 4096 bytes.
+event_append() {
+	local name="$1" tok key value seen=' ' bead=null pr=null sha=null actor=null detail=null raw='' ts line n lo hi mid cut
+	shift
+	case "$name" in
+		campaign.start|bead.claimed|worktree.acquired|pane.spawned|pr.opened|review.started|review.verdict|issue.opened|issue.resolved|pr.merged|bead.closed|pane.reaped|worker.crashed|watch.escalation|driver.paused|driver.resumed|campaign.complete) ;;
+		*) printf 'smile event: unknown event %s\n' "$name" >&2; return 2 ;;
+	esac
+	for tok in "$@"; do
+		case "$tok" in *=*) ;; *) printf 'smile event: bad argument %s\n' "$tok" >&2; return 2 ;; esac
+		key="${tok%%=*}"; value="${tok#*=}"
+		case "$seen" in *" $key "*) printf 'smile event: duplicate key %s\n' "$key" >&2; return 2 ;; esac
+		seen="$seen$key "
+		case "$key" in
+			bead) json_str bead "$value" ;;
+			sha) json_str sha "$value" ;;
+			actor) json_str actor "$value" ;;
+			detail) json_str detail "$value"; raw="$value" ;;
+			pr) [[ $value =~ ^[1-9][0-9]*$ ]] || { printf 'smile event: pr must be a positive integer, got "%s"\n' "$value" >&2; return 2; }
+				pr="$value" ;;
+			*) printf 'smile event: unknown key %s\n' "$key" >&2; return 2 ;;
+		esac
+	done
+	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	event_line line; bytelen n "$line"
+	if [ "$n" -gt 4095 ] && [ "$detail" != null ]; then
+		# binary search on the prefix length: the encoded line grows with the prefix
+		utf8_len hi "$raw"; lo=0
+		while [ "$lo" -lt "$hi" ]; do
+			mid=$(( (lo + hi + 1) / 2 ))
+			utf8_prefix cut "$raw" "$mid"; json_str detail "$cut"; event_line line; bytelen n "$line"
+			if [ "$n" -le 4095 ]; then lo=$mid; else hi=$((mid - 1)); fi
+		done
+		utf8_prefix cut "$raw" "$lo"; json_str detail "$cut"; event_line line
+	fi
+	mkdir -p "$SMILE_ROOT/.factory"
+	printf '%s\n' "$line" >> "$SMILE_ROOT/.factory/events.jsonl"
+}
+
+# event_line <var>: the line for event_append's current fields (bash scoping lets it see them)
+event_line() {
+	printf -v "$1" '{"ts":"%s","event":"%s","bead":%s,"pr":%s,"sha":%s,"actor":%s,"detail":%s}' \
+		"$ts" "$name" "$bead" "$pr" "$sha" "$actor" "$detail"
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# smile resume: remove .factory/pause and log driver.resumed; "not paused" when the file is absent.
+# rm's own status decides, so concurrent resumes log exactly one event.
+# Contract: docs/RUNTIME-CONTRACT.md section 4.
+set -euo pipefail
+. "$SMILE_ROOT/smile/bash/lib/events"
+[ $# -eq 0 ] || { printf 'usage: smile resume\n' >&2; exit 2; }
+if rm "$SMILE_ROOT/.factory/pause" 2>/dev/null; then
+	event_append driver.resumed "actor=${SMILE_ACTOR:-human}"
+	printf 'resumed\n'
+else
+	printf 'not paused\n'
+fi

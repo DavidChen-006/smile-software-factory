@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# smile pause: create .factory/pause and log driver.paused; "already paused" when the file exists.
+# noclobber makes the create atomic, so concurrent pauses log exactly one event.
+# Contract: docs/RUNTIME-CONTRACT.md section 4.
+set -euo pipefail -C
+. "$SMILE_ROOT/smile/bash/lib/events"
+[ $# -eq 0 ] || { printf 'usage: smile pause\n' >&2; exit 2; }
+mkdir -p "$SMILE_ROOT/.factory"
+if : 2>/dev/null > "$SMILE_ROOT/.factory/pause"; then   # stderr first, so the noclobber refusal is silent
+	event_append driver.paused "actor=${SMILE_ACTOR:-human}"
+	printf 'paused\n'
+else
+	printf 'already paused\n'
+fi

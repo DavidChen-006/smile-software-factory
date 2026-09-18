@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# smile init: bd init, treehouse init, .worktreeinclude, .factory/, .factory/events.jsonl, in that
+# order, each only when absent. Idempotent, appends no event. Contract: docs/RUNTIME-CONTRACT.md section 4.
+set -euo pipefail
+[ $# -eq 0 ] || { printf 'usage: smile init\n' >&2; exit 2; }
+cd "$SMILE_ROOT"
+
+if [ -d .beads ]; then printf 'exists .beads\n'; else
+	# prefix: basename ASCII-lowercased, keep [a-z0-9], first two characters; fewer than two: sm
+	prefix=$(basename "$SMILE_ROOT" | LC_ALL=C tr A-Z a-z | LC_ALL=C tr -cd a-z0-9)
+	prefix="${prefix:0:2}"
+	[ "${#prefix}" -eq 2 ] || prefix=sm
+	# bd init -q still narrates hook installation on stdout; only our lines belong there
+	BD_NON_INTERACTIVE=1 bd init --prefix "$prefix" -q >/dev/null || { printf 'smile init: bd init failed\n' >&2; exit 1; }
+	printf 'created .beads\n'
+fi
+if [ -e treehouse.toml ]; then printf 'exists treehouse.toml\n'; else
+	treehouse init >/dev/null || { printf 'smile init: treehouse init failed\n' >&2; exit 1; }
+	printf 'created treehouse.toml\n'
+fi
+if [ -e .worktreeinclude ]; then printf 'exists .worktreeinclude\n'; else
+	printf '.env\nsmile.config.yaml\n' > .worktreeinclude
+	printf 'created .worktreeinclude\n'
+fi
+if [ -d .factory ]; then printf 'exists .factory\n'; else
+	mkdir .factory
+	printf 'created .factory\n'
+fi
+if [ -e .factory/events.jsonl ]; then printf 'exists .factory/events.jsonl\n'; else
+	: > .factory/events.jsonl
+	printf 'created .factory/events.jsonl\n'
+fi

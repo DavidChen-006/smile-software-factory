@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# smile status: bead counts by status, open PR count, last ten events. A section whose tool fails
+# prints "  unavailable"; exit is always 0. Contract: docs/RUNTIME-CONTRACT.md section 4.
+# python3 does only the JSON decoding.
+set -euo pipefail
+[ $# -eq 0 ] || { printf 'usage: smile status\n' >&2; exit 2; }
+cd "$SMILE_ROOT"
+
+# a tool that fails, or prints something other than the JSON list expected, gives "  unavailable"
+printf 'beads:\n'
+out=$(BD_NON_INTERACTIVE=1 bd list --all --json) || out=
+printf '%s' "$out" | python3 -c '
+import collections, json, sys
+try:
+    counts = collections.Counter(b["status"] for b in json.load(sys.stdin))
+    if not all(isinstance(status, str) for status in counts): raise ValueError
+    lines = ["  %s %d" % (status, counts[status]) for status in sorted(counts)]
+except Exception:
+    lines = ["  unavailable"]
+print("\n".join(lines)) if lines else None'
+
+printf 'prs:\n'
+out=$(gh pr list --state open --limit 1000 --json number) || out=
+printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    prs = json.load(sys.stdin)
+    if not isinstance(prs, list): raise ValueError
+    print("  open %d" % len(prs))
+except Exception:
+    print("  unavailable")'
+
+printf 'events:\n'
+if [ -e .factory/events.jsonl ]; then
+	python3 - .factory/events.jsonl <<'EOF'
+import json, sys
+# surrogateescape keeps a corrupt line byte-exact on the way in and out; newline="" keeps a raw CR
+data = open(sys.argv[1], encoding="utf-8", errors="surrogateescape", newline="").read()
+lines = data.split("\n")
+if lines[-1] == "":
+    lines.pop()
+for raw in lines[-10:]:
+    try:
+        obj = json.loads(raw)
+        if not isinstance(obj, dict):
+            raise ValueError
+        fields = ["-" if obj.get(k) is None else str(obj[k]) for k in ("ts", "event", "bead", "pr", "detail")]
+        fields[4] = fields[4].replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        out = " ".join(fields)
+    except ValueError:
+        out = raw
+    sys.stdout.buffer.write(("  %s\n" % out).encode("utf-8", "surrogateescape"))
+EOF
+fi

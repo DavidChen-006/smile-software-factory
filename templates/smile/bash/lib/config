@@ -1,0 +1,36 @@
+# lib/config: read smile.config.yaml (docs/RUNTIME-CONTRACT.md section 2). Sourced, never run.
+# The schema lives in config_default; a key it rejects is unknown everywhere.
+
+# config_default <key>: print the schema default; return 3 when <key> is not in the schema
+config_default() {
+	case "$1" in
+		runtime) printf 'bash' ;;
+		backend) ;;
+		worker.model) printf 'opus' ;;
+		worker.permission_mode) printf 'acceptEdits' ;;
+		reviewer.models) printf 'opus' ;;
+		max_parallel) printf '3' ;;
+		watchtower) printf 'on' ;;
+		merge) printf 'auto' ;;
+		base_branch) printf 'main' ;;
+		*) return 3 ;;
+	esac
+}
+
+# config_get <key>: print the first file value (trimmed of space, tab, CR), else the default;
+# return 3 when <key> is unknown. Only a line starting with "<key>:" counts.
+config_get() {
+	local key="$1" value line ws=$' \t\r'
+	value=$(config_default "$key") || return 3
+	if [ -f "$SMILE_ROOT/smile.config.yaml" ]; then
+		while IFS= read -r line || [ -n "$line" ]; do
+			case "$line" in "$key:"*)
+				value="${line#*:}"
+				value="${value#"${value%%[!$ws]*}"}"
+				value="${value%"${value##*[!$ws]}"}"
+				break ;;
+			esac
+		done < "$SMILE_ROOT/smile.config.yaml"
+	fi
+	printf '%s\n' "$value"
+}
