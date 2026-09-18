@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# smile: single entry point. Finds the repo root (the directory holding smile.config.yaml
+# above this script), reads `runtime` from it, and execs that runtime with the command.
+# Contract: docs/RUNTIME-CONTRACT.md in the SMILE repo.
+set -euo pipefail
+
+[ $# -ge 1 ] || { printf 'usage: smile <command> [args...]\n' >&2; exit 1; }
+cmd="$1"; shift
+case "$cmd" in */*|.*) printf 'smile: bad command name %s\n' "$cmd" >&2; exit 2 ;; esac
+
+# walk up to the first directory holding the config or a .git entry
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+while [ ! -f "$root/smile.config.yaml" ] && [ ! -e "$root/.git" ] && [ "$root" != "/" ]; do
+	root=$(dirname "$root")
+done
+[ -f "$root/smile.config.yaml" ] || { printf 'smile: no smile.config.yaml above %s\n' "${BASH_SOURCE[0]}" >&2; exit 2; }
+export SMILE_ROOT="$root"
+
+runtime=$(sed -n '/^runtime:/{s/^runtime:[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$root/smile.config.yaml")
+case "${runtime:-bash}" in
+	bash)
+		target="$root/smile/bash/$cmd"
+		[ -f "$target" ] && [ -x "$target" ] || { printf 'smile: unknown command %s (no %s)\n' "$cmd" "$target" >&2; exit 2; }
+		exec "$target" "$@" ;;
+	py)
+		target="$root/smile/py/smile.py"
+		[ -f "$target" ] || { printf 'smile: py runtime missing (%s)\n' "$target" >&2; exit 2; }
+		exec python3 "$target" "$cmd" "$@" ;;
+	*)
+		printf 'smile: unknown runtime "%s" in %s/smile.config.yaml\n' "$runtime" "$root" >&2; exit 2 ;;
+esac
