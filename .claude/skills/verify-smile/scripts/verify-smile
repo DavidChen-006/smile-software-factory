@@ -191,7 +191,8 @@ cmd_feature() {
 		case "$name" in
 			install) feature_install "$runid" "$fixture" "$runtime" ;;
 			doctor) feature_doctor "$runid" "$fixture" "$runtime" ;;
-			mux|loop|review|gate|watchtower|narrate)
+			mux) feature_mux "$runid" "$fixture" "$runtime" "$backend" ;;
+			loop|review|gate|watchtower|narrate)
 				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
 				exit 2 ;;
 			*) die "unknown feature '$name'; see features/README.md" ;;
@@ -233,6 +234,69 @@ feature_doctor() {
 	[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 7 ] || { printf 'FAIL doctor: expected seven lines\n'; return 1; }
 	[ "$(printf '%s\n' "$out" | grep -c '^ok ')" -eq 7 ] || { printf 'FAIL doctor: a line is not ok\n'; return 1; }
 	printf 'PASS doctor (runtime=%s)\n' "$runtime"
+}
+
+# feature_mux: drive the three verbs of `smile mux` against the fixture's own tmux session.
+# Spawns three panes, asserts the window count rose by three and each handle is alive, kills them,
+# asserts each is dead and the count is back, then kills one twice to prove kill is idempotent.
+# Only handles this run spawned are ever killed; the session belongs to the fixture.
+feature_mux() {
+	local runid="$1" fixture="$2" runtime="$3" backend="$4"
+	local smile session before after rc=0 h handles=""
+	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL mux: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	smile="$fixture/smile/smile"
+	[ -x "$smile" ] || { printf 'FAIL mux: %s is not executable\n' "$smile"; return 1; }
+	[ -x "$fixture/smile/bash/mux" ] || [ -f "$fixture/smile/py/mux.py" ] \
+		|| { printf 'NOT IMPLEMENTED mux (no mux command stamped)\n'; exit 2; }
+
+	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
+	if [ -n "$backend" ]; then
+		sed -i.bak "s/^backend:.*/backend: $backend/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
+	fi
+	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
+
+	# The fixture's own session, so nothing of the user's is ever touched.
+	session=$(mf "$runid" tmux_session)
+	tmux has-session -t "=$session" 2>/dev/null || { printf 'FAIL mux: tmux session %s missing\n' "$session"; return 1; }
+	export SMILE_MUX_SESSION="$session"
+	before=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
+	printf 'windows before: %s\n' "$before"
+	tmux list-windows -t "=$session"
+
+	local n
+	for n in w1 w2 w3; do
+		h=$("$smile" mux spawn "$n" "$fixture" sleep 300) || { printf 'FAIL mux: spawn %s exited %s\n' "$n" "$?"; return 1; }
+		printf 'spawned %s -> %s\n' "$n" "$h"
+		case "$h" in tmux:*|cmux:*|herdr:*) ;; *) printf 'FAIL mux: handle %s does not start with a backend name\n' "$h"; return 1 ;; esac
+		handles="$handles $h"
+	done
+
+	after=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
+	printf 'windows after spawn: %s\n' "$after"
+	tmux list-windows -t "=$session"
+	[ "$after" -eq $((before + 3)) ] || { printf 'FAIL mux: expected %s windows, found %s\n' "$((before + 3))" "$after"; return 1; }
+
+	for h in $handles; do
+		"$smile" mux alive "$h" || { printf 'FAIL mux: alive %s exited %s, want 0\n' "$h" "$?"; return 1; }
+	done
+	printf 'all three alive\n'
+
+	for h in $handles; do
+		"$smile" mux kill "$h" || { printf 'FAIL mux: kill %s exited %s, want 0\n' "$h" "$?"; return 1; }
+	done
+	for h in $handles; do
+		rc=0; "$smile" mux alive "$h" || rc=$?
+		[ "$rc" -eq 1 ] || { printf 'FAIL mux: alive %s after kill exited %s, want 1\n' "$h" "$rc"; return 1; }
+	done
+	after=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
+	printf 'windows after kill: %s\n' "$after"
+	tmux list-windows -t "=$session"
+	[ "$after" -eq "$before" ] || { printf 'FAIL mux: expected %s windows after kill, found %s\n' "$before" "$after"; return 1; }
+
+	h=${handles##* }
+	"$smile" mux kill "$h" || { printf 'FAIL mux: second kill of %s exited %s, want 0\n' "$h" "$?"; return 1; }
+	printf 'second kill of %s exited 0\n' "$h"
+	printf 'PASS mux (runtime=%s)\n' "$runtime"
 }
 
 # ---------------------------------------------------------------- down

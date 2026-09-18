@@ -1,0 +1,51 @@
+# mux.d/tmux: the tmux pane backend (docs/RUNTIME-CONTRACT.md section 7). Sourced by smile/bash/mux.
+# Handle: tmux:<session>:<window_id>, the window id being tmux's own @N, which is stable for the
+# life of the window and unique across sessions. Every -t session target carries the `=` exact
+# prefix so a session whose name is a prefix of another is never hit by accident.
+
+# tmux_split_rest <rest>: set tmux_session_name and tmux_window_id from <session>:<window_id>.
+# The session name is everything before the last colon; tmux forbids a colon in a session name.
+tmux_split_rest() {
+	case "$1" in *:*) ;; *) bad_handle "tmux:$1" ;; esac
+	tmux_session_name="${1%:*}"
+	tmux_window_id="${1##*:}"
+	[ -n "$tmux_session_name" ] && [ -n "$tmux_window_id" ] || bad_handle "tmux:$1"
+}
+
+# backend_spawn <name> <cwd> <command> [args...]: create the session detached the first time,
+# add a window every time after. The command is handed to tmux as argv after `--`, so tmux
+# execs it directly and an argument with a space survives.
+backend_spawn() {
+	local name="$1" cwd="$2" session wid; shift 2
+	command -v tmux >/dev/null 2>&1 || fail "missing tmux: not on PATH"
+	session=$(mux_session)
+	if tmux has-session -t "=$session" 2>/dev/null; then
+		wid=$(tmux new-window -d -P -F '#{window_id}' -t "=$session" -n "$name" -c "$cwd" -- "$@") \
+			|| fail "tmux new-window refused"
+	else
+		wid=$(tmux new-session -d -P -F '#{window_id}' -s "$session" -n "$name" -c "$cwd" -- "$@") \
+			|| fail "tmux new-session refused"
+	fi
+	# The window must vanish when the command exits, so `alive` is the truth about the process.
+	# Off is tmux's default; this overrides a user's global on. A command that already exited
+	# took its window with it, which is the same end state, so a failure here is not an error.
+	tmux set-window-option -t "$wid" remain-on-exit off >/dev/null 2>&1 || true
+	printf 'tmux:%s:%s\n' "$session" "$wid"
+}
+
+# backend_alive <rest>: 0 while the window is listed in its session and its pane has not died.
+backend_alive() {
+	tmux_split_rest "$1"
+	command -v tmux >/dev/null 2>&1 || return 1
+	tmux list-windows -t "=$tmux_session_name" -F '#{window_id}' 2>/dev/null \
+		| grep -qxF "$tmux_window_id" || return 1
+	local dead
+	dead=$(tmux display -p -t "$tmux_window_id" '#{pane_dead}' 2>/dev/null) || return 1
+	[ "$dead" = 0 ]
+}
+
+# backend_kill <rest>: idempotent. A window that is already gone is the wanted end state.
+backend_kill() {
+	tmux_split_rest "$1"
+	tmux kill-window -t "=$tmux_session_name:$tmux_window_id" >/dev/null 2>&1 || true
+}
