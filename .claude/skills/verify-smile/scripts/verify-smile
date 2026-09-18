@@ -223,7 +223,10 @@ feature_install() {
 feature_doctor() {
 	local runid="$1" fixture="$2" runtime="$3" out rc=0
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL doctor: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	grep -q '^runtime:' "$fixture/smile.config.yaml" || { printf 'FAIL doctor: no runtime line in config\n'; return 1; }
 	sed -i.bak "s/^runtime:.*/runtime: $runtime/" "$fixture/smile.config.yaml" && rm -f "$fixture/smile.config.yaml.bak"
+	# commit the edit so the fixture's tree stays clean for later features
+	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: runtime $runtime"
 	out=$("$fixture/smile/smile" doctor) || rc=$?
 	printf '%s\n--- exit %s\n' "$out" "$rc"
 	[ "$rc" -eq 0 ] || { printf 'FAIL doctor: exit %s\n' "$rc"; return 1; }

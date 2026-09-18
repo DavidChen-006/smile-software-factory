@@ -6,22 +6,29 @@ set -euo pipefail
 [ $# -eq 0 ] || { printf 'usage: smile status\n' >&2; exit 2; }
 cd "$SMILE_ROOT"
 
+# a tool that fails, or prints something other than the JSON list expected, gives "  unavailable"
 printf 'beads:\n'
-if out=$(BD_NON_INTERACTIVE=1 bd list --all --json); then
-	printf '%s' "$out" | python3 -c '
+out=$(BD_NON_INTERACTIVE=1 bd list --all --json) || out=
+printf '%s' "$out" | python3 -c '
 import collections, json, sys
-counts = collections.Counter(b["status"] for b in json.load(sys.stdin) or [])
-for status in sorted(counts): print("  %s %d" % (status, counts[status]))'
-else
-	printf '  unavailable\n'
-fi
+try:
+    counts = collections.Counter(b["status"] for b in json.load(sys.stdin))
+    if not all(isinstance(status, str) for status in counts): raise ValueError
+    lines = ["  %s %d" % (status, counts[status]) for status in sorted(counts)]
+except Exception:
+    lines = ["  unavailable"]
+print("\n".join(lines)) if lines else None'
 
 printf 'prs:\n'
-if out=$(gh pr list --state open --limit 1000 --json number); then
-	printf '%s' "$out" | python3 -c 'import json, sys; print("  open %d" % len(json.load(sys.stdin) or []))'
-else
-	printf '  unavailable\n'
-fi
+out=$(gh pr list --state open --limit 1000 --json number) || out=
+printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    prs = json.load(sys.stdin)
+    if not isinstance(prs, list): raise ValueError
+    print("  open %d" % len(prs))
+except Exception:
+    print("  unavailable")'
 
 printf 'events:\n'
 if [ -e .factory/events.jsonl ]; then

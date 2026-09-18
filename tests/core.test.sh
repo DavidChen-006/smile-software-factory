@@ -115,9 +115,17 @@ check "second init prints five exists lines" test "$OUT" = $'exists .beads\nexis
 check "init appends no event" test ! -s "$LOG"
 
 # ---------------------------------------------------------------- event
-LONG=$(printf 'x%.0s' $(seq 1 5000))
-"$SMILE" event campaign.start "detail=$LONG"
-check "event keeps a long line under 4096 bytes by cutting detail" test "$(tail -1 "$LOG" | wc -c | tr -d ' ')" -le 4096
+# trunc_len <detail>: byte length, newline included, of the line an event with that detail appends
+trunc_len() { "$SMILE" event campaign.start "detail=$1" && tail -1 "$LOG" | wc -c | tr -d ' '; }
+LONGX=$(printf 'x%.0s' $(seq 1 5000)); LONGT=$(printf '\t%.0s' $(seq 1 5000)); LONGE=$(printf 'é%.0s' $(seq 1 3000))
+check "event cuts a 5000 x detail to a line of exactly 4096 bytes" test "$(trunc_len "$LONGX")" = 4096
+check "event cuts 5000 tabs (2 bytes each escaped) to 4095 bytes" test "$(trunc_len "$LONGT")" = 4095
+check "event cuts 3000 é (2 bytes each) to 4095 bytes without splitting one" test "$(trunc_len "$LONGE")" = 4095
+export LC_ALL=C
+check "event cuts 5000 x the same under LC_ALL=C" test "$(trunc_len "$LONGX")" = 4096
+check "event cuts 3000 é the same under LC_ALL=C" test "$(trunc_len "$LONGE")" = 4095
+check "event output under LC_ALL=C is valid UTF-8" python3 -c 'import sys; sys.stdin.buffer.read().decode()' < "$LOG"
+unset LC_ALL
 "$SMILE" event bead.claimed bead=sv-1 actor=driver detail='tick 3'; RC=$?
 check "event exits 0" test "$RC" -eq 0
 check "event ts is UTC to the second with a Z suffix" test "$(tail -1 "$LOG" | grep -Ec "^\{\"ts\":\"$TS_RE\",")" -eq 1
@@ -132,6 +140,7 @@ check "event escapes quote, backslash, tab, newline, and a control char; not sla
 N=$(lines)
 reject() { "$SMILE" event "$@" >/dev/null 2>&1; test $? -eq 2; }
 check "event rejects an unknown name" reject nope bead=sv-1
+check "event rejects two names in one argument" reject 'bead.claimed worktree.acquired'
 check "event rejects a non-integer pr" reject pr.opened pr=x
 check "event rejects pr with a leading zero" reject pr.opened pr=07
 check "event rejects an empty pr" reject pr.opened pr=
@@ -164,6 +173,25 @@ OUT=$(GH_PRS='[{"number":7},{"number":9}]' PATH="$GHBIN:$PATH" "$SMILE" status 2
 check "status exits 0" test "$RC" -eq 0
 check "status renders beads sorted, the pr count, and the last ten events with - for null and raw fallback" \
 	test "$OUT" = $'beads:\n  closed 1\n  open 1\nprs:\n  open 2\nevents:\n  TS bead.claimed sv-1 - tick 3\n  TS pr.opened sv-1 7 -\n  TS bead.closed - - \n  TS review.verdict - - a"b\\c d e\x01f café/\x7f\n  TS driver.paused - - -\n  TS driver.resumed - - -\n  TS campaign.start - - x y\n  TS campaign.start - - x y\n  TS campaign.start - - x y\n  not json'
+# bd stand-in: prints $BD_OUT as the list and exits 0, so status sees well-formed and malformed JSON
+BDBIN="$TMP/bin-bd"; mkdir -p "$BDBIN"
+printf '#!/bin/sh\nprintf "%%s" "$BD_OUT"\n' > "$BDBIN/bd"; chmod +x "$BDBIN/bd"
+OUT=$(BD_OUT='[{"status":5}]' PATH="$BDBIN:$GHBIN:$PATH" "$SMILE" status 2>/dev/null | sed -n 1,2p); RC=$?
+check "status with a non-string bead status prints unavailable and exits 0" test "$RC" -eq 0 -a "$OUT" = $'beads:\n  unavailable'
+OUT=$(BD_OUT='nope' PATH="$BDBIN:$GHBIN:$PATH" "$SMILE" status 2>/dev/null | sed -n 1,2p); RC=$?
+check "status with non-JSON from bd prints unavailable and exits 0" test "$RC" -eq 0 -a "$OUT" = $'beads:\n  unavailable'
+
+# ---------------------------------------------------------------- pause under contention
+printf '\n' >> "$LOG"   # end the corrupt line so the next event starts on its own line
+SMILE_ACTOR= "$SMILE" pause >/dev/null
+check "pause with SMILE_ACTOR set but empty logs actor human" test "$(last)" = '{"ts":"TS","event":"driver.paused","bead":null,"pr":null,"sha":null,"actor":"human","detail":null}'
+"$SMILE" resume >/dev/null
+N=$(lines)
+for i in $(seq 1 20); do "$SMILE" pause >> "$TMP/pause.out" & done; wait
+check "20 concurrent pauses print paused exactly once" test "$(grep -cx paused "$TMP/pause.out")" -eq 1
+check "20 concurrent pauses print already paused 19 times" test "$(grep -cx 'already paused' "$TMP/pause.out")" -eq 19
+check "20 concurrent pauses log exactly one event" test "$(lines)" -eq $((N + 1))
+
 rm -rf "$REPO/.beads" "$REPO/.factory"
 OUT=$(PATH="$GHBIN:$PATH" "$SMILE" status 2>/dev/null); RC=$?
 check "status without .beads, gh, or a log exits 0" test "$RC" -eq 0
