@@ -1,0 +1,19 @@
+# SMILE config. One `key: value` per line, `#` lines are comments, no nesting.
+# Which runtime the smile shim dispatches to: bash or py.
+runtime: bash
+# Pane backend: tmux, cmux, or herdr. Empty means auto-detect in that order.
+backend:
+# Claude model the driver launches each worker with.
+worker.model: opus
+# Permission mode the worker runs under.
+worker.permission_mode: acceptEdits
+# Comma-separated models the review lane runs, one review per model.
+reviewer.models: opus
+# Most beads in flight at once.
+max_parallel: 3
+# Spawn the watchtower pane at campaign start: on or off.
+watchtower: on
+# auto squash-merges approved PRs; human leaves them labeled smile:approved.
+merge: auto
+# Branch that worker PRs target and worktrees branch from.
+base_branch: main
