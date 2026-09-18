@@ -1,3 +1,6 @@
 ts	phase	decision	why	evidence	result
 2026-09-18T10:01:35Z	setup	created private repo smile-software-factory and vendored all 47 pstack skills into .claude/skills	forks need the pstack playbooks and principles visible in-repo; MIT credit in vendor/PSTACK-CREDIT.md	vendor/PSTACK-CREDIT.md	done
 2026-09-18T10:01:36Z	setup	David chose: throwaway smile-verify-* repos for verification, PR per spike, bash AND python runtimes with a measured bakeoff, private until dogfood	grill session 2026-09-18; the bakeoff replaces my recommendation to keep only bash	chat transcript 2026-09-18	open: bakeoff metric defined in SPEC.md
+2026-09-18T10:06:10Z	spec	froze docs/SPEC.md in the multi-phase-plan shape, skipped check-plan.mjs lane and perf rules	the checker hard-codes ten Grok lanes and a perf block that do not apply to shell scripts; style rules kept	docs/SPEC.md	posted to David, S0 proceeds meanwhile
+2026-09-18T10:06:10Z	spec	review trigger is the driver scanning open PRs per tick, not a git hook	hooks run in the worker worktree with git's hook env and broke worktree add once; the driver already polls	docs/SPEC.md Appendix B	design refinement, same behavior
+2026-09-18T10:06:10Z	spec	bakeoff runs through S4 then David picks; loser deleted before S5	two runtimes through all nine spikes doubles every later spike for no new signal	docs/SPEC.md The bakeoff	open until S4
