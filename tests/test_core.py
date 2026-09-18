@@ -89,7 +89,8 @@ class DispatchTest(RepoCase):
 
     def test_extra_argument_exits_2(self) -> None:
         for cmd in ("doctor", "init", "pause", "resume", "status"):
-            self.assertEqual(smile(self.repo, cmd, "extra").returncode, 2, cmd)
+            r = smile(self.repo, cmd, "extra")
+            self.assertEqual((r.returncode, r.stdout, len(r.stderr.splitlines())), (2, b"", 1), cmd)
 
 
 class DoctorTest(RepoCase):
@@ -176,20 +177,33 @@ class EventTest(RepoCase):
         self.assertEqual(line, '{"ts":"TS","event":"pr.opened","bead":"sv-1","pr":7,"sha":"abc123","actor":null,"detail":null}')
 
     def test_empty_detail_is_empty_string(self) -> None:
-        self.assertIn('"detail":""', self.append("campaign.start", "detail="))
+        self.assertEqual(self.append("campaign.start", "detail="),
+                         '{"ts":"TS","event":"campaign.start","bead":null,"pr":null,"sha":null,"actor":null,"detail":""}')
 
     def test_escapes_per_contract(self) -> None:
-        detail = 'q"b\\t\tn\nc\x01café/\x7f'
+        detail = 'q"b\\t\tn\nc\x01café/\x7f\b\f\r'
         self.append("worker.crashed", f"detail={detail}")
         raw = log_lines(self.repo)[-1]
-        self.assertTrue(raw.endswith(b'"detail":"q\\"b\\\\t\\tn\\nc\\u0001caf\xc3\xa9/\x7f"}'), raw)
+        self.assertTrue(raw.endswith(b'"detail":"q\\"b\\\\t\\tn\\nc\\u0001caf\xc3\xa9/\x7f\\b\\f\\r"}'), raw)
         self.assertEqual(json.loads(raw)["detail"], detail)
+
+    def test_invalid_utf8_argv_passes_through_raw(self) -> None:
+        self.append("pr.opened", os.fsdecode(b"detail=\xff"))
+        self.assertTrue(log_lines(self.repo)[-1].endswith(b'"detail":"\xff"}'))
+        self.assertIn(b" pr.opened - - \xff\n", smile(self.repo, "status").stdout)
 
     def test_long_detail_truncated_to_fit(self) -> None:
         self.append("watch.escalation", "detail=" + "x" * 5000)
         raw = log_lines(self.repo)[-1] + b"\n"
+        self.assertEqual(len(raw), 4096)
+        self.assertTrue(("x" * 5000).startswith(json.loads(raw)["detail"]))
+        # multibyte detail: cut on a code point boundary, longest prefix that fits
+        self.append("watch.escalation", "detail=" + "é" * 3000)
+        raw = log_lines(self.repo)[-1] + b"\n"
+        detail = json.loads(raw)["detail"]
+        self.assertTrue(("é" * 3000).startswith(detail))
         self.assertLessEqual(len(raw), 4096)
-        self.assertEqual(json.loads(raw)["event"], "watch.escalation")
+        self.assertGreater(len(raw) + 2, 4096, "one more code point would not fit")
 
     def test_rejects_bad_arguments(self) -> None:
         bad = [(), ("nosuch.event",), ("pr.opened", "pr=x"), ("pr.opened", "pr=0"), ("pr.opened", "pr=07"),
@@ -223,6 +237,8 @@ class ConfigTest(RepoCase):
         self.assertEqual(self.get("get", "base_branch").stdout, b"main\n")
         self.assertEqual(self.get("get", "worker.model").stdout, "café\n".encode())
         self.assertEqual(self.get("get", "watchtower").stdout, b"off\n")
+        cfg.write_bytes(b"runtime: py\nworker.model: \xff\n")
+        self.assertEqual(self.get("get", "worker.model").stdout, b"\xff\n")
 
     def test_exit_codes(self) -> None:
         r = self.get("get", "nosuch")
@@ -250,6 +266,8 @@ class PauseResumeTest(RepoCase):
         r = smile(self.repo, "resume")
         self.assertEqual((r.returncode, r.stdout), (0, b"not paused\n"))
         self.assertEqual(len(log_lines(self.repo)), 2)
+        smile(self.repo, "pause", env={"SMILE_ACTOR": ""})  # empty counts as unset
+        self.assertIn('"actor":"human"', strip_ts(log_lines(self.repo)[-1]))
 
 
 class StatusTest(RepoCase):
@@ -272,14 +290,20 @@ class StatusTest(RepoCase):
         smile(self.repo, "event", "bead.claimed", "bead=sv-1", "actor=driver", "detail=tick 3")
         smile(self.repo, "event", "pr.opened", "bead=sv-1", "pr=7")
         with open(f"{self.repo}/.factory/events.jsonl", "ab") as f:
-            f.write(b"not json\n[1,2]\n")
+            f.write(b'not json\n[1,2]\n{"ts":"t","event":"pr.merged","bead":null,"pr":[7],"sha":null,"actor":null,"detail":null}\n')
         smile(self.repo, "event", "pane.spawned", "detail=a\tb\nc\rd", "sha=")
         out = self.status()
         self.assertEqual(re.sub(TS, "TS", out), (
             "beads:\n  closed 1\n  in_progress 1\n  open 2\nprs:\n  unavailable\nevents:\n"
-            "  TS bead.claimed sv-1 - tick 3\n  TS pr.opened sv-1 7 -\n  not json\n  [1,2]\n  TS pane.spawned - - a b c d\n"))
+            "  TS bead.claimed sv-1 - tick 3\n  TS pr.opened sv-1 7 -\n  not json\n  [1,2]\n"
+            '  {"ts":"t","event":"pr.merged","bead":null,"pr":[7],"sha":null,"actor":null,"detail":null}\n'
+            "  TS pane.spawned - - a b c d\n"))
+        # a bd that prints a non-string status makes the section unavailable
+        d = bin_dir((), stubs={"bd": "echo '[{\"status\":5}]'"})
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.assertTrue(smile(self.repo, "status", env={"PATH": d}).stdout.startswith(b"beads:\n  unavailable\n"))
         # last ten, oldest first, and a final line without a newline still counts
-        for i in range(7):  # 5 lines so far + 7 + 1 unterminated = 13; the last ten start at "[1,2]"
+        for i in range(6):  # 6 lines so far + 6 + 1 unterminated = 13; the last ten start at "[1,2]"
             smile(self.repo, "event", "bead.closed", f"detail=n{i}")
         with open(f"{self.repo}/.factory/events.jsonl", "ab") as f:
             f.write(b'{"ts":"t","event":"campaign.complete","bead":null,"pr":null,"sha":null,"actor":null,"detail":"last"}')

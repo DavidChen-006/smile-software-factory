@@ -20,7 +20,7 @@ BLANK = " \t\r"
 def read(root: str) -> dict[str, str]:
     """Every key present in the file, first occurrence wins, values trimmed of space/tab/CR."""
     values: dict[str, str] = {}
-    with open(f"{root}/smile.config.yaml", encoding="utf-8") as f:
+    with open(f"{root}/smile.config.yaml", encoding="utf-8", errors="surrogateescape") as f:
         for line in f.read().split("\n"):
             if line.lstrip(BLANK).startswith("#") or not KEY_LINE.match(line):
                 continue

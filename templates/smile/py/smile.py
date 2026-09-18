@@ -167,7 +167,7 @@ def render(line: str) -> str:
         obj = json.loads(line)
     except ValueError:
         return line
-    if not isinstance(obj, dict):
+    if not isinstance(obj, dict) or any(type(obj.get(k)) not in (str, int, type(None)) for k in events.KEYS):
         return line
     detail = obj.get("detail")
     if isinstance(detail, str):
@@ -180,10 +180,11 @@ def cmd_status(root: str, args: list[str]) -> int:
     no_args(args)
     print("beads:")
     beads = tool_json(root, ["bd", "list", "--all", "--json"])
-    if beads is None:
+    statuses = [b.get("status") if isinstance(b, dict) else None for b in beads or []]
+    if beads is None or any(not isinstance(s, str) for s in statuses):
         print("  unavailable")
     else:
-        counts = Counter(b["status"] for b in beads)
+        counts = Counter(statuses)
         for status in sorted(counts):
             print(f"  {status} {counts[status]}")
     print("prs:")
@@ -221,7 +222,7 @@ def main(argv: list[str]) -> int:
     except Usage as e:
         print(f"smile: {e}", file=sys.stderr)
         return 2
-    except (OSError, subprocess.CalledProcessError) as e:
+    except Exception as e:  # noqa: BLE001  any other failure: one stderr line, exit 1 (contract section 4)
         print(f"smile: {e}", file=sys.stderr)
         return 1
 
