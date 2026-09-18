@@ -211,7 +211,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **You see.**
 
-- [ ] `smile mux spawn t /tmp 'sleep 30'` prints a handle, `tmux list-windows -t smile-<repo>` shows `t`, `alive` exits 0, `kill` removes it, `alive` exits 1.
+- [ ] `smile mux spawn t /tmp sleep 30` prints a handle, `tmux list-windows -t smile-<repo>` shows `t`, `alive` exits 0, `kill` removes it, `alive` exits 1.
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -219,7 +219,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `verify-smile feature mux --runtime <r>` spawns three panes in the fixture session, asserts three windows, kills them, asserts zero. Pass when it prints `PASS`.
+- [ ] `verify-smile feature mux --runtime <r>` spawns three panes in the fixture session, asserts the window count rose by three, kills them, asserts it fell back to where it started. Pass when it prints `PASS`.
 
 **Review gate.** None. S2 is not review-gated.
 
