@@ -8,18 +8,19 @@ set -euo pipefail
 cmd="$1"; shift
 case "$cmd" in */*|.*) printf 'smile: bad command name %s\n' "$cmd" >&2; exit 2 ;; esac
 
+# walk up to the first directory holding the config or a .git entry
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-while [ ! -f "$root/smile.config.yaml" ]; do
-	[ "$root" != "/" ] || { printf 'smile: no smile.config.yaml above %s\n' "${BASH_SOURCE[0]}" >&2; exit 2; }
+while [ ! -f "$root/smile.config.yaml" ] && [ ! -e "$root/.git" ] && [ "$root" != "/" ]; do
 	root=$(dirname "$root")
 done
+[ -f "$root/smile.config.yaml" ] || { printf 'smile: no smile.config.yaml above %s\n' "${BASH_SOURCE[0]}" >&2; exit 2; }
 export SMILE_ROOT="$root"
 
-runtime=$(sed -n 's/^runtime:[[:space:]]*//p' "$root/smile.config.yaml" | head -1 | sed 's/[[:space:]]*$//')
+runtime=$(sed -n '/^runtime:/{s/^runtime:[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$root/smile.config.yaml")
 case "${runtime:-bash}" in
 	bash)
 		target="$root/smile/bash/$cmd"
-		[ -x "$target" ] || { printf 'smile: unknown command %s (no %s)\n' "$cmd" "$target" >&2; exit 2; }
+		[ -f "$target" ] && [ -x "$target" ] || { printf 'smile: unknown command %s (no %s)\n' "$cmd" "$target" >&2; exit 2; }
 		exec "$target" "$@" ;;
 	py)
 		target="$root/smile/py/smile.py"

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Exercises install.py against a temp directory: first stamp, idempotent second run, drift
-# refusal, --force replacement, and the .gitignore line. Also drives the stamped smile shim's
-# dispatch and error paths with a throwaway bash command.
+# refusal, --force replacement, the .gitignore line, and a symlinked destination. Also drives
+# the stamped smile shim's dispatch, root discovery, and error paths with a throwaway command.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 INSTALL="$ROOT/install.py"
 # cd && pwd normalizes the path (macOS TMPDIR ends in a slash) so it compares equal to SMILE_ROOT
 TARGET=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/smile-install-test.XXXXXX")" && pwd)
-trap 'rm -rf "$TARGET"' EXIT
+TARGET2=$(mktemp -d "${TMPDIR:-/tmp}/smile-install-test.XXXXXX")
+trap 'rm -rf "$TARGET" "$TARGET2"' EXIT
 FAILS=0
 
 check() {   # check <description> <command...>
@@ -19,6 +20,11 @@ check() {   # check <description> <command...>
 		printf 'FAIL %s\n' "$desc"
 		FAILS=$((FAILS + 1))
 	fi
+}
+
+# set_runtime <value>: rewrite the runtime line in the stamped config, portably
+set_runtime() {
+	sed -i.bak "s/^runtime: .*/runtime: $1/" "$TARGET/smile.config.yaml" && rm -f "$TARGET/smile.config.yaml.bak"
 }
 
 TEMPLATE_FILES=$(cd "$ROOT/templates" && find . -type f ! -name .DS_Store ! -path '*/__pycache__/*' | sed 's|^\./||' | sort)
@@ -57,6 +63,18 @@ check "force run prints replaced for the drifted file" grep -qx 'replaced smile.
 check "force run restores the template bytes" cmp -s "$ROOT/templates/smile.config.yaml" "$TARGET/smile.config.yaml"
 check ".gitignore still has the line once after force" test "$(grep -cx '.factory/' "$TARGET/.gitignore")" -eq 1
 
+# ---------------------------------------------------------------- symlinked destination
+python3 "$INSTALL" "$TARGET2" >/dev/null 2>&1
+printf 'elsewhere\n' > "$TARGET2/elsewhere.md"
+rm "$TARGET2/prompts/worker.md" && ln -s ../elsewhere.md "$TARGET2/prompts/worker.md"
+OUT=$(python3 "$INSTALL" "$TARGET2" 2>&1); RC=$?
+check "symlinked destination exits 1" test "$RC" -eq 1
+check "symlinked destination is reported as symlink drift" grep -qx 'drifted prompts/worker.md, symlink' <<<"$OUT"
+OUT=$(python3 "$INSTALL" "$TARGET2" --force 2>&1); RC=$?
+check "symlinked destination still exits 1 with --force" test "$RC" -eq 1
+check "symlink is left in place" test -L "$TARGET2/prompts/worker.md"
+check "symlink target is not written through" test "$(cat "$TARGET2/elsewhere.md")" = "elsewhere"
+
 # ---------------------------------------------------------------- usage
 python3 "$INSTALL" >/dev/null 2>&1; check "no target exits 2" test $? -eq 2
 python3 "$INSTALL" "$TARGET/does-not-exist" >/dev/null 2>&1; check "missing target exits 2" test $? -eq 2
@@ -65,15 +83,18 @@ python3 "$INSTALL" "$TARGET/does-not-exist" >/dev/null 2>&1; check "missing targ
 SHIM="$TARGET/smile/smile"
 "$SHIM" >/dev/null 2>&1; check "shim with no args exits 1" test $? -eq 1
 "$SHIM" nosuch >/dev/null 2>&1; check "shim with unknown command exits 2" test $? -eq 2
+"$SHIM" "" >/dev/null 2>&1; check "shim with empty command exits 2" test $? -eq 2
 "$SHIM" ../x >/dev/null 2>&1; check "shim rejects a path as command" test $? -eq 2
 mkdir -p "$TARGET/smile/bash"
 printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$SMILE_ROOT" "$*"\n' > "$TARGET/smile/bash/probe"
 chmod +x "$TARGET/smile/bash/probe"
 GOT=$(cd / && "$SHIM" probe a b 2>&1)
 check "shim execs smile/bash/<command> with args and SMILE_ROOT" test "$GOT" = "$TARGET|a b"
-sed -i '' 's/^runtime: bash$/runtime: py/' "$TARGET/smile.config.yaml"
+mkdir -p "$TARGET/nested/smile" && cp "$SHIM" "$TARGET/nested/smile/smile" && printf 'gitdir: nowhere\n' > "$TARGET/nested/.git"
+"$TARGET/nested/smile/smile" probe >/dev/null 2>&1; check "shim stops at a .git entry and exits 2 without config there" test $? -eq 2
+set_runtime py
 "$SHIM" probe >/dev/null 2>&1; check "py runtime without smile.py exits 2" test $? -eq 2
-sed -i '' 's/^runtime: py$/runtime: ruby/' "$TARGET/smile.config.yaml"
+set_runtime ruby
 "$SHIM" probe >/dev/null 2>&1; check "unknown runtime exits 2" test $? -eq 2
 
 if [ "$FAILS" -eq 0 ]; then
