@@ -6,7 +6,6 @@ a pane lives in `.factory/runs/<bead>.json`; the pane itself is only ever touche
 checkout as its working directory, so a driver started in a linked worktree drives one factory and one
 treehouse pool. Failures raise: main turns them into one stderr line and exit 1.
 """
-from __future__ import annotations
 
 import glob
 import json
@@ -22,28 +21,36 @@ from datetime import datetime, timezone
 
 import config
 import events
+import github
 import worktree
 from mux import Usage
+from worktree import stderr, tool
 
 OPEN = ("open", "in_progress", "blocked")  # a campaign is complete when no bead is in one of these
 STATE_KEYS = ("bead", "worktree", "handle", "order", "attempts", "spawned_at")
 COUNT = re.compile(r"[1-9][0-9]*")  # ASCII only: str.isdigit() would take ٣ and ⁷
+CAP = 3  # reviews of one head that named no verdict before the driver stops trying (contract section 9)
+
+
+def unanswered(log: list, pr: int, sha: str) -> int:
+    """How many reviews of this head no verdict ever answered: the cap counts attempts, not reviews.
+
+    A verdict at the pair clears the count, so a head that was judged and then re-reviewed at the
+    same sha starts its tally again rather than inheriting the old one.
+    """
+    count = 0
+    for record in log:
+        if record.get("pr") != pr or record.get("sha") != sha:
+            continue
+        if record.get("event") == "review.started":
+            count += 1
+        elif record.get("event") == "review.verdict":
+            count = 0
+    return count
 
 
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def stderr(proc: subprocess.CompletedProcess) -> str:
-    return next(iter(proc.stderr.decode(errors="replace").splitlines()), "no output")
-
-
-def tool(cwd: str, argv: list) -> str:
-    """Run a tool and return its stdout; a non-zero exit is one line and exit 1 through main."""
-    proc = subprocess.run(argv, cwd=cwd, env=worktree.TOOL_ENV, capture_output=True, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(f"{argv[0]} failed: {stderr(proc)}")
-    return proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def beads(cwd: str, argv: list) -> list:
@@ -83,26 +90,48 @@ def trust(path: str) -> None:
 class Driver:
     """The loop's state: where the factory is, what the config says, and the run files under it."""
 
-    def __init__(self, root: str, interval: int) -> None:
+    def __init__(self, root: str, interval: int = 60) -> None:
         self.root = root
         self.interval = interval
         self.repo = worktree.repo(root)  # every tool call runs here, never in a linked worktree
         self.factory = worktree.factory(root)
         self.runs = f"{self.factory}/runs"
         self.parallel = int(config.get(root, "max_parallel"))
+        self.prs: list | None = None
+        self.every_pr: list | None = None
         self.base_branch = config.get(root, "base_branch")
 
     # ------------------------------------------------------------ seams
-    def mux(self, *args: str) -> subprocess.CompletedProcess:
-        """The mux seam, always as a subprocess of the stamped shim, never as an import."""
-        return subprocess.run([f"{self.root}/smile/smile", "mux", *args], cwd=self.repo,
+    def smile(self, *args: str) -> subprocess.CompletedProcess:
+        """A command of the stamped shim as a subprocess, never as an import: one entry point, always."""
+        return subprocess.run([f"{self.root}/smile/smile", *args], cwd=self.repo,
                               env=worktree.TOOL_ENV, capture_output=True, check=False)
+
+    def mux(self, *args: str) -> subprocess.CompletedProcess:
+        """The mux seam, always through the shim, so both the driver and a reviewer drive one seam."""
+        return self.smile("mux", *args)
 
     def event(self, name: str, bead: str, detail: str | None = None, ts: str | None = None) -> None:
         events.append(self.root, name, bead=bead, actor="driver", detail=detail, ts=ts)
 
-    def state_files(self) -> list:
-        return sorted(glob.glob(f"{self.runs}/*.json"))
+    def open_prs(self) -> list:
+        """The open factory pull requests, read once per tick: reap and review ask the same question."""
+        if self.prs is None:
+            self.prs = github.factory_prs(self.repo, "open")
+        return self.prs
+
+    def all_prs(self) -> list:
+        """Every factory pull request in any state, read once per tick: reap asks whether one exists at all."""
+        if self.every_pr is None:
+            self.every_pr = github.factory_prs(self.repo, "all", "number,body")
+        return self.every_pr
+
+    def state_files(self, where: str = "") -> list:
+        return sorted(glob.glob(f"{self.runs}/{where}/*.json" if where else f"{self.runs}/*.json"))
+
+    def live_files(self) -> list:
+        """Every run that still holds a worktree: spawned under runs/, or waiting on review."""
+        return self.state_files() + self.state_files("waiting")
 
     def read_state(self, path: str) -> dict | None:
         """The run state in a file, or None when it is not a JSON object carrying all six keys."""
@@ -126,6 +155,7 @@ class Driver:
     # ------------------------------------------------------------ tick
     def tick(self) -> bool:
         """One tick in contract order. True when the campaign is complete."""
+        self.prs = self.every_pr = None  # the tick's view of GitHub, read at most once each
         self.reap()
         self.review_pending()
         if not os.path.exists(f"{self.factory}/pause"):  # pause already logged driver.paused; log nothing here
@@ -134,7 +164,9 @@ class Driver:
 
     def reap(self) -> None:
         status = {b.get("id"): b.get("status") for b in beads(self.repo, ["bd", "list", "--all", "--json"])}
-        for path in self.state_files():
+        waiting = self.state_files("waiting")
+        opened = {r.get("bead") for r in events.read(self.root) if r.get("event") == "pr.opened"}
+        for path in self.state_files() + waiting:
             state = self.read_state(path)
             if state is None or state["bead"] not in status:  # a file no tick can act on never wedges the loop
                 self.event("worker.crashed", os.path.basename(path)[:-len(".json")], "unreadable")
@@ -142,8 +174,22 @@ class Driver:
             elif self.mux("alive", state["handle"]).returncode != 0:  # 1 gone, 2 malformed: both are dead
                 if status[state["bead"]] == "closed":
                     self.reaped(path, state)
+                elif path in waiting:
+                    pass  # already parked: the review lane moves it back when it asks for a fix round
+                elif state["bead"] in opened or self.has_pr(state["bead"]):
+                    self.file_under(path, "waiting")  # a round is done and its pull request is up: no event
                 else:
                     self.crashed(path, state)
+
+    def has_pr(self, bead: str) -> bool:
+        """Did this worker open its pull request? The log knows only after step 2, GitHub knows now.
+
+        A worker opens its pull request and exits seconds later, so on the tick that finds the pane
+        dead the log has not named it yet; asking GitHub here is what keeps a finished round from
+        being read as a crash. Every state is asked for, not only open: a pull request a human
+        merged before the first tick is a finished round too, never a crash.
+        """
+        return any(pr["bead"] == bead for pr in self.all_prs())
 
     def reaped(self, path: str, state: dict) -> None:
         """A dead pane whose bead is closed: kill the window, return the worktree, file the run under done/."""
@@ -163,10 +209,51 @@ class Driver:
         self.spawn(state["bead"], state["worktree"], state["order"], attempts=2)
 
     def review_pending(self) -> None:
-        """S4 fills this. In S3 a tick reviews nothing."""
+        """Contract section 9 step 2: name every new pull request, review every head with no verdict.
+
+        The review itself runs as `smile review <n>`, a subprocess of the shim, so one PR that cannot
+        be reviewed is one stderr line and the tick goes on to the next.
+        """
+        log = events.read(self.root)
+        opened = {r.get("pr") for r in log if r.get("event") == "pr.opened"}
+        judged = {(r.get("pr"), r.get("sha")) for r in log if r.get("event") == "review.verdict"}
+        escalated = {(r.get("pr"), r.get("sha")) for r in log if r.get("event") == "watch.escalation"}
+        for pr in self.open_prs():
+            pair = (pr["number"], pr["headRefOid"])
+            if pr["number"] not in opened:
+                events.append(self.root, "pr.opened", bead=pr["bead"], pr=pr["number"],
+                              sha=pr["headRefOid"], actor="driver")
+            if pair in judged:
+                continue
+            if unanswered(log, *pair) >= CAP:  # a head three reviews could not judge is a human's problem
+                if pair not in escalated:
+                    events.append(self.root, "watch.escalation", bead=pr["bead"], pr=pr["number"],
+                                  sha=pr["headRefOid"], actor="driver", detail="review failed 3 times")
+                continue
+            proc = self.smile("review", str(pr["number"]))
+            if proc.returncode != 0:
+                print(f"smile: review {pr['number']} failed: {stderr(proc)}", file=sys.stderr)
+        self.close_merged(events.read(self.root))  # re-read: the reviews above merged and closed beads
+
+    def close_merged(self, log: list) -> None:
+        """A merged pull request whose bead is still open: close it now that GitHub says it landed.
+
+        Whether the lane merged it or a human did, and whether or not it carries `smile:approved`,
+        GitHub is the record of what landed; `smile audit` is what reports a merge no verdict approved.
+        """
+        closed = {r.get("bead") for r in log if r.get("event") == "bead.closed"}
+        announced = {r.get("pr") for r in log if r.get("event") == "pr.merged"}
+        for pr in github.factory_prs(self.repo, "merged", "number,body,mergeCommit"):
+            if pr["bead"] in closed:
+                continue
+            tool(self.repo, ["bd", "close", pr["bead"]])
+            if pr["number"] not in announced:  # the lane logs its own merges; this is the human's path
+                events.append(self.root, "pr.merged", bead=pr["bead"], pr=pr["number"],
+                              sha=(pr.get("mergeCommit") or {}).get("oid"), actor="human")
+            events.append(self.root, "bead.closed", bead=pr["bead"], pr=pr["number"], actor="driver")
 
     def claim(self) -> None:
-        live = len(self.state_files())
+        live = len(self.live_files())
         for bead in beads(self.repo, ["bd", "ready", "--json"]):
             if live >= self.parallel:
                 return
@@ -208,7 +295,7 @@ class Driver:
         order = f"{self.factory}/orders/{bead_id}.md"
         os.makedirs(os.path.dirname(order), exist_ok=True)
         with open(order, "w", encoding="utf-8") as f:
-            f.write(worktree.order(template, values))
+            f.write(worktree.render(template, values))
         return order
 
     def spawn(self, bead_id: str, path: str, order: str, attempts: int, record: dict | None = None) -> None:
@@ -241,7 +328,7 @@ class Driver:
                 "--permission-mode", config.get(self.root, "worker.permission_mode"), text]
 
     def complete(self) -> bool:
-        if self.state_files() or any(b.get("status") in OPEN for b in beads(self.repo, ["bd", "list", "--json"])):
+        if self.live_files() or any(b.get("status") in OPEN for b in beads(self.repo, ["bd", "list", "--json"])):
             return False
         events.append(self.root, "campaign.complete", actor="driver")
         return True
@@ -328,7 +415,7 @@ def cmd_run(root: str, args: list) -> int:
     singleton(driver.factory)
     signal.signal(signal.SIGTERM, stop)
     try:
-        if not driver.state_files():  # a driver resuming over live runs joins the campaign, it does not start one
+        if not driver.live_files():  # a driver resuming over live runs joins the campaign, it does not start one
             events.append(root, "campaign.start", actor="driver", detail=str(interval))
         while not driver.tick():
             if once:

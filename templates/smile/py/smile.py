@@ -1,9 +1,12 @@
-"""SMILE py runtime. The shim runs `python3 smile.py <command> [args...]` with SMILE_ROOT exported.
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""SMILE py runtime. The shim runs `uv run smile.py <command> [args...]` with SMILE_ROOT exported.
 
 One function per command, all listed in COMMANDS. Contract: docs/RUNTIME-CONTRACT.md in the SMILE repo.
 """
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
-
 import json
 import os
 import re
@@ -13,9 +16,12 @@ import sys
 from collections import Counter
 
 sys.dont_write_bytecode = True  # no __pycache__ in the stamped repo; set before the modules beside this file load
+import audit
 import config
 import events
+import gate
 import mux
+import review
 import run
 import worktree
 
@@ -68,8 +74,8 @@ def mux_line(backend: str) -> str:
 
 def cmd_doctor(root: str, args: list[str]) -> int:
     no_args(args)
-    lines = [on_path("git"), on_path("gh"), gh_auth(), on_path("claude"), on_path("bd"), on_path("treehouse"),
-             mux_line(config.get(root, "backend"))]
+    lines = [on_path("uv"), on_path("git"), on_path("gh"), gh_auth(), on_path("claude"), on_path("bd"),
+             on_path("treehouse"), mux_line(config.get(root, "backend"))]
     print("\n".join(lines))
     return 1 if any(line.startswith("missing ") for line in lines) else 0
 
@@ -211,6 +217,9 @@ COMMANDS = {
     "status": cmd_status,
     "mux": mux.cmd_mux,
     "run": run.cmd_run,
+    "review": review.cmd_review,
+    "gate": gate.cmd_gate,
+    "audit": audit.cmd_audit,
 }
 
 

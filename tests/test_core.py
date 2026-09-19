@@ -1,15 +1,13 @@
 """S1 core tests for the py runtime, driven through the stamped shim in scratch git repos.
 
-Run from the repo root: python3 -m unittest tests.test_core -v
+Run from the repo root: uv run python -m unittest tests.test_core -v
 """
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
 
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +15,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TS = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
 TOOLS = ("git", "gh", "claude", "bd", "treehouse", "tmux", "cmux", "herdr")
-SHIM_NEEDS = ("bash", "sed", "dirname")  # the shim's own commands beyond the tools doctor checks
+# The shim's own needs beyond the tools doctor checks. uv is here, not in TOOLS, because the shim
+# execs `uv run`: a scratch PATH without uv fails before doctor prints its first line.
+SHIM_NEEDS = ("uv", "bash", "sed", "dirname")
 
 
 def make_repo(name: str = "smile-core") -> str:
@@ -28,7 +28,7 @@ def make_repo(name: str = "smile-core") -> str:
     subprocess.run(["git", "init", "-q", path], check=True)
     subprocess.run(["git", "-C", path, "config", "user.email", "test@localhost"], check=True)
     subprocess.run(["git", "-C", path, "config", "user.name", "test"], check=True)
-    subprocess.run([sys.executable, str(ROOT / "install.py"), path], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["uv", "run", str(ROOT / "install.py"), path], check=True, stdout=subprocess.DEVNULL)
     return path
 
 
@@ -66,7 +66,6 @@ def bin_dir(tools: tuple[str, ...], stubs: dict[str, str] | None = None) -> str:
         else:
             Path(d, tool).write_text("#!/bin/sh\nexit 0\n")
             os.chmod(os.path.join(d, tool), 0o755)
-    os.symlink(sys.executable, os.path.join(d, "python3"))
     for tool, body in (stubs or {}).items():
         Path(d, tool).write_text(f"#!/bin/sh\n{body}\n")
         os.chmod(os.path.join(d, tool), 0o755)
@@ -104,19 +103,20 @@ class DoctorTest(RepoCase):
 
     def test_all_ok_in_order(self) -> None:
         rc, lines = self.doctor(TOOLS)
-        self.assertEqual(lines, ["ok git", "ok gh", "ok gh-auth", "ok claude", "ok bd", "ok treehouse", "ok mux tmux"])
+        self.assertEqual(lines, ["ok uv", "ok git", "ok gh", "ok gh-auth", "ok claude", "ok bd", "ok treehouse",
+                                 "ok mux tmux"])
         self.assertEqual(rc, 0)
         self.assertFalse(Path(self.repo, ".factory").exists(), "doctor is read-only")
 
     def test_missing_tools(self) -> None:
         rc, lines = self.doctor(("git", "claude", "bd", "cmux"))
-        self.assertEqual(lines, ["ok git", "missing gh not on PATH", "missing gh-auth gh not on PATH", "ok claude",
-                                 "ok bd", "missing treehouse not on PATH", "ok mux cmux"])
+        self.assertEqual(lines, ["ok uv", "ok git", "missing gh not on PATH", "missing gh-auth gh not on PATH",
+                                 "ok claude", "ok bd", "missing treehouse not on PATH", "ok mux cmux"])
         self.assertEqual(rc, 1)
 
     def test_gh_auth_failed(self) -> None:
         rc, lines = self.doctor(TOOLS, stubs={"gh": "exit 1"})
-        self.assertEqual(lines[1:3], ["ok gh", "missing gh-auth gh auth status failed"])
+        self.assertEqual(lines[2:4], ["ok gh", "missing gh-auth gh auth status failed"])
         self.assertEqual(rc, 1)
 
     def test_no_backend_on_path(self) -> None:

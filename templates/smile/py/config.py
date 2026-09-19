@@ -1,5 +1,4 @@
 """smile.config.yaml: the schema table and the flat `key: value` parser (contract section 2)."""
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
 
 import re
 
@@ -9,6 +8,7 @@ SCHEMA = {
     "worker.model": "opus",
     "worker.permission_mode": "acceptEdits",
     "reviewer.models": "opus",
+    "reviewer.timeout": "600",
     "max_parallel": "3",
     "watchtower": "on",
     "merge": "auto",

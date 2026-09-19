@@ -3,7 +3,6 @@
 The factory directory is resolved through worktree.factory, so a linked worktree appends to the main
 checkout's log: one file per repo, however many worktrees write it.
 """
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
 
 import json
 import os
@@ -48,16 +47,38 @@ def append(root: str, event: str, bead: str | None = None, pr: int | None = None
         os.close(fd)
 
 
-def tail(root: str, n: int) -> list[str]:
-    """The last n lines of the log, oldest first, raw; [] when the log is missing or empty.
+def read(root: str) -> list[dict]:
+    """Every event in the log, oldest first. A line that is not a JSON object is skipped.
+
+    The log is the review lane's whole memory of what it has already done, so a corrupt line must
+    never stop a tick: what cannot be read simply did not happen.
+    """
+    records = []
+    for line in lines(root):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def lines(root: str) -> list[str]:
+    """Every line of the log, oldest first, raw; [] when the log is missing or empty.
 
     newline="" keeps a corrupt line's own CR: only the trailing newline is stripped, nothing is translated.
     """
     try:
         with open(f"{worktree.factory(root)}/events.jsonl", encoding="utf-8", errors="surrogateescape", newline="") as f:
-            lines = f.read().split("\n")
+            found = f.read().split("\n")
     except FileNotFoundError:
         return []
-    if lines and lines[-1] == "":
-        lines.pop()  # the file's trailing newline is not an empty line
-    return lines[-n:]
+    if found and found[-1] == "":
+        found.pop()  # the file's trailing newline is not an empty line
+    return found
+
+
+def tail(root: str, n: int) -> list[str]:
+    """The last n lines of the log, oldest first, raw."""
+    return lines(root)[-n:]

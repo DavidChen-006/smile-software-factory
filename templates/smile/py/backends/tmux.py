@@ -4,7 +4,6 @@ tmux rewrites `.` and `:` in a session name to `_`, so the name it reports back 
 targets anything. spawn prints `#{session_name}:#{window_id}` and returns that line unread, and alive
 and kill target what the handle carries; only the -t of a brand new window is built from the asked name.
 """
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
 
 import re
 import subprocess

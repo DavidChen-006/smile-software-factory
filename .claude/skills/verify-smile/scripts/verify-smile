@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# verify-smile: drive the SMILE factory against a throwaway fixture repo and keep the proof.
+# verify-smile: composable primitives for driving the SMILE factory against a throwaway fixture.
 #
-#   verify-smile up                                   create a fixture, print "fixture ready <runid> <path>"
-#   verify-smile feature <name> [--real-review] [--backend <b>] [--run <runid>]
-#   verify-smile down <runid>                         collect evidence, tear the fixture down
-#   verify-smile list                                 known runs and their state
-#   verify-smile gc [--dry-run]                       delete leftover smile-verify-*-trash repos
+# Fixture lifecycle    up | doctor | list | down [--dry-run] | gc [--dry-run]
+# Setup                stamp | seed --beads <n>
+# Drive                tick | review | gate | close-bead | kill-pane | time
+# Observe              events | runs | panes | prs | issues | trust | evidence
+#
+# Every verb takes --run <runid> and uses the newest run when it is left out. Every verb prints
+# JSON on stdout: one object, or one object per line for a listing. A failure is one line on
+# stderr and a non-zero exit. `<verb> --help` prints that verb's own usage.
+#
+# Nothing here decides PASS or FAIL except `doctor`. The verbs are the lever; what a given
+# behaviour's proof looks like lives in features/, the map a verifier reads before driving.
 #
 # A run is one manifest at ~/.smile-verify/<runid>/manifest.json. Every command reads or writes
 # that manifest and nothing else, so any later agent can pick a run up cold. `up` writes the
-# manifest before its first side effect and after each one, so a failed `up` can always be
-# torn down from what the manifest records.
+# manifest before its first side effect and after each one, so a failed `up` can always be torn
+# down from what the manifest records.
 set -Eeuo pipefail
 
 EVIDENCE_ROOT="${SMILE_VERIFY_ROOT:-$HOME/.smile-verify}"
@@ -18,13 +24,33 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SMILE_REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
 
 die() { printf 'verify-smile: %s\n' "$*" >&2; exit 1; }
-log() { printf '[verify-smile] %s\n' "$*"; }
+log() { printf '[verify-smile] %s\n' "$*" >&2; }
+
+# py <args...>: the driving machine's python. SMILE itself needs no python3 (the shim execs
+# `uv run`), so when the machine has none this falls back to uv's interpreter.
+if command -v python3 >/dev/null 2>&1; then
+	py() { python3 "$@"; }
+else
+	py() { uv run --quiet python "$@"; }
+fi
+
+# jout <key> <value> ...: one JSON object on stdout. A key ending in `#` carries a raw JSON value
+# (a number, a list, an object); every other value is a string.
+jout() {
+	py -c '
+import json, sys
+a = sys.argv[1:]
+o = {}
+for k, v in zip(a[0::2], a[1::2]):
+    o[k[:-1] if k.endswith("#") else k] = json.loads(v) if k.endswith("#") else v
+print(json.dumps(o))' "$@"
+}
 
 manifest_path() { printf '%s/%s/manifest.json' "$EVIDENCE_ROOT" "$1"; }
 
 # mf <runid> <key>: print one manifest field, empty when absent
 mf() {
-	python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+	py -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
 		"$(manifest_path "$1")" "$2"
 }
 
@@ -33,7 +59,7 @@ mf() {
 mf_set() {
 	local runid="$1"; shift
 	mkdir -p "$EVIDENCE_ROOT/$runid"
-	python3 - "$(manifest_path "$runid")" "$@" <<'EOF'
+	py - "$(manifest_path "$runid")" "$@" <<'EOF'
 import json, os, sys
 path = sys.argv[1]
 m = json.load(open(path)) if os.path.exists(path) else {}
@@ -46,10 +72,6 @@ os.replace(tmp, path)
 EOF
 }
 
-require_manifest() {
-	[ -f "$(manifest_path "$1")" ] || die "no manifest for run '$1' under $EVIDENCE_ROOT; refusing"
-}
-
 each_run() {   # runids in creation order
 	local m
 	for m in "$EVIDENCE_ROOT"/*/manifest.json; do
@@ -59,6 +81,30 @@ each_run() {   # runids in creation order
 }
 
 latest_run() { each_run | tail -1; }
+
+# need_value <flag> <value>
+need_value() { [ -n "${2:-}" ] || die "flag $1 needs a value; see 'verify-smile $VERB --help'"; }
+
+# resolve_run: set RUNID from --run or the newest run, and require its manifest
+resolve_run() {
+	[ -n "$RUNID" ] || RUNID=$(latest_run)
+	[ -n "$RUNID" ] || die "no run found under $EVIDENCE_ROOT; run 'verify-smile up' first"
+	[ -f "$(manifest_path "$RUNID")" ] \
+		|| die "no manifest for run '$RUNID' under $EVIDENCE_ROOT; run 'verify-smile list' to see known runs"
+	FIXTURE=$(mf "$RUNID" fixture)
+}
+
+require_up() {
+	local state
+	state=$(mf "$RUNID" state)
+	[ "$state" = "up" ] \
+		|| die "run $RUNID is '$state', not 'up'; run 'verify-smile up' for a fresh fixture"
+}
+
+require_stamped() {
+	[ "$(mf "$RUNID" install)" = "stamped" ] \
+		|| die "run $RUNID is not stamped (install=$(mf "$RUNID" install)); run 'verify-smile stamp --run $RUNID' first"
+}
 
 # fail_hook <stage>: test hook. When SMILE_VERIFY_FAIL_AFTER names this stage, fail here.
 fail_hook() {
@@ -70,20 +116,28 @@ fail_hook() {
 }
 
 # ---------------------------------------------------------------- up
+UP_HELP='verify-smile up
+
+Create a fixture: a private GitHub repo smile-verify-<runid>, a clone, a bd database, and a
+detached tmux session named for the run. Stamps nothing and seeds no bead; see `stamp` and `seed`.
+
+Prints one object: runid, repo, fixture, session, state.'
+
 up_failed() {
 	local runid="$1"
 	trap - ERR
 	log "up failed; tearing down run $runid from its manifest"
-	cmd_down "$runid" || log "teardown of $runid also failed; rerun: verify-smile down $runid"
+	RUNID="$runid" DRY=0 cmd_down_inner || log "teardown of $runid also failed; rerun: verify-smile down --run $runid"
 	exit 1
 }
 
 cmd_up() {
-	command -v gh >/dev/null || die "gh missing"
-	command -v bd >/dev/null || die "bd missing"
-	command -v tmux >/dev/null || die "tmux missing"
-	command -v git >/dev/null || die "git missing"
-	gh auth status >/dev/null 2>&1 || die "gh is not logged in"
+	[ $# -eq 0 ] || die "up takes no arguments; see 'verify-smile up --help'"
+	command -v gh >/dev/null || die "gh is not on PATH; install the GitHub CLI"
+	command -v bd >/dev/null || die "bd is not on PATH; install beads"
+	command -v tmux >/dev/null || die "tmux is not on PATH; install tmux"
+	command -v git >/dev/null || die "git is not on PATH"
+	gh auth status >/dev/null 2>&1 || die "gh is not logged in; run 'gh auth login'"
 
 	local runid owner name tmp fixture session smile_commit
 	runid="$(date -u +%Y%m%dT%H%M%SZ)-$(head -c 2 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -96,7 +150,8 @@ cmd_up() {
 
 	mf_set "$runid" runid "$runid" owner "$owner" repo "$owner/$name" repo_name "$name" \
 		fixture "$fixture" tmp "$tmp" tmux_session "$session" \
-		smile_repo "$SMILE_REPO" smile_commit "$smile_commit" state creating stage names
+		smile_repo "$SMILE_REPO" smile_commit "$smile_commit" install skipped beads "" \
+		state creating stage names
 	log "run $runid"
 	trap 'up_failed "$runid"' ERR
 	fail_hook names
@@ -122,316 +177,712 @@ cmd_up() {
 	mf_set "$runid" stage init
 	fail_hook init
 
-	log "seeding beads"
-	local bead_a bead_b ready_ids
 	(cd "$fixture" && BD_NON_INTERACTIVE=1 bd init --prefix sv >/dev/null 2>&1)
-	bead_a=$(cd "$fixture" && bd create "bead A: add a file" --silent)
-	bead_b=$(cd "$fixture" && bd create "bead B: add a second file, after A" --deps "$bead_a" --silent)
-	ready_ids=$(cd "$fixture" && bd ready --json | python3 -c 'import json,sys; print(" ".join(i["id"] for i in json.load(sys.stdin)))')
-	[ "$ready_ids" = "$bead_a" ]
-	mf_set "$runid" bead_a "$bead_a" bead_b "$bead_b" stage beads
+	mf_set "$runid" stage beads
 	fail_hook beads
 
 	log "opening tmux session $session"
 	tmux new-session -d -s "$session" -c "$fixture"
-	mf_set "$runid" stage tmux
+	mf_set "$runid" stage tmux state up
 	fail_hook tmux
-
-	local install_result
-	if [ -f "$SMILE_REPO/install.py" ]; then
-		log "stamping SMILE from $SMILE_REPO@$smile_commit"
-		if python3 "$SMILE_REPO/install.py" "$fixture" > "$EVIDENCE_ROOT/$runid/install-stamp.log" 2>&1; then
-			install_result="stamped"
-			# commit the stamp as a user would; bd init already committed .gitignore, and an
-			# unstaged edit to it makes the stub worker's pull --rebase refuse
-			(cd "$fixture" && git add -A && git commit -q -m "chore: stamp smile" && git push -q origin main)
-			mf_set "$runid" stamp_commit "$(git -C "$fixture" rev-parse HEAD)"
-		else
-			install_result="stamp-failed"
-			log "install.py failed, see $EVIDENCE_ROOT/$runid/install-stamp.log"
-		fi
-	else
-		install_result="skipped"
-		log "install skipped, no install.py yet"
-	fi
-	mf_set "$runid" install "$install_result" stage stamp state up
-	fail_hook stamp
 	trap - ERR
-	printf 'fixture ready %s %s\n' "$runid" "$fixture"
+	jout runid "$runid" repo "$owner/$name" fixture "$fixture" session "$session" state up
 }
 
-# ---------------------------------------------------------------- feature
-need_value() { [ -n "${2:-}" ] || die "flag $1 needs a value"; }
+# ---------------------------------------------------------------- stamp
+STAMP_HELP='verify-smile stamp [--from <checkout>] [--run <runid>]
 
-cmd_feature() {
-	local name="${1:-}"; shift || true
-	[ -n "$name" ] || die "usage: verify-smile feature <name> [--real-review] [--backend <b>] [--run <runid>]"
-	local real_review=0 backend="" runid=""
+Stamp SMILE into the fixture the way a user does, `uv run <checkout>/install.py <fixture>`, commit
+and push the stamp, then run `smile init` so the treehouse pool and .factory/ exist. --from
+defaults to the checkout this skill lives in, so a spike branch is what gets stamped.
+
+Prints one object: runid, source, source_commit, stamp_commit, init (the init lines), log.'
+
+cmd_stamp() {
+	local source="$SMILE_REPO"
 	while [ $# -gt 0 ]; do
 		case "$1" in
-			--real-review) real_review=1 ;;
-			--backend) need_value "$1" "${2:-}"; backend="$2"; shift ;;
-			--run) need_value "$1" "${2:-}"; runid="$2"; shift ;;
-			*) die "unknown flag $1" ;;
+			--from) need_value "$1" "${2:-}"; source="$2"; shift ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile stamp --help'" ;;
 		esac
 		shift
 	done
-	[ -n "$runid" ] || runid=$(latest_run)
-	[ -n "$runid" ] || die "no run found; run 'verify-smile up' first"
-	require_manifest "$runid"
-	[ "$(mf "$runid" state)" = "up" ] || die "run $runid is not up (state $(mf "$runid" state))"
-	local fixture logf
-	fixture=$(mf "$runid" fixture)
-	logf="$EVIDENCE_ROOT/$runid/$name.log"
-	{
-		printf '=== feature %s real_review=%s backend=%s run=%s at %s\n' \
-			"$name" "$real_review" "${backend:-default}" "$runid" "$(date -u +%FT%TZ)"
-		case "$name" in
-			install) feature_install "$runid" "$fixture" ;;
-			doctor) feature_doctor "$runid" "$fixture" ;;
-			mux) feature_mux "$runid" "$fixture" "$backend" ;;
-			loop) feature_loop "$runid" "$fixture" ;;
-			review|gate|watchtower|narrate)
-				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
-				exit 2 ;;
-			*) die "unknown feature '$name'; see features/README.md" ;;
-		esac
-	} 2>&1 | tee -a "$logf"
-}
-
-feature_install() {
-	local runid="$1" fixture="$2"
-	local install
-	install=$(mf "$runid" install)
-	[ -d "$fixture/.beads" ] || { printf 'FAIL install: no .beads in fixture\n'; return 1; }
-	tmux has-session -t "=$(mf "$runid" tmux_session)" 2>/dev/null \
-		|| { printf 'FAIL install: tmux session missing\n'; return 1; }
-	case "$install" in
-		skipped)
-			printf 'PASS install (stamp skipped, nothing stamped yet)\n' ;;
-		stamped)
-			[ -x "$fixture/smile/smile" ] || { printf 'FAIL install: smile/smile not stamped or not executable\n'; return 1; }
-			[ -f "$fixture/smile.config.yaml" ] || { printf 'FAIL install: smile.config.yaml missing\n'; return 1; }
-			printf 'PASS install (stamped)\n' ;;
-		*)
-			printf 'FAIL install: stamp result %s\n' "$install"; return 1 ;;
-	esac
-}
-
-# feature_doctor: run `smile doctor` in the fixture and assert exit 0 with exactly seven `ok `
-# lines. The transcript goes to the feature log through the caller's tee.
-feature_doctor() {
-	local runid="$1" fixture="$2" out rc=0
-	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL doctor: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
-	out=$("$fixture/smile/smile" doctor) || rc=$?
-	printf '%s\n--- exit %s\n' "$out" "$rc"
-	[ "$rc" -eq 0 ] || { printf 'FAIL doctor: exit %s\n' "$rc"; return 1; }
-	[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 7 ] || { printf 'FAIL doctor: expected seven lines\n'; return 1; }
-	[ "$(printf '%s\n' "$out" | grep -c '^ok ')" -eq 7 ] || { printf 'FAIL doctor: a line is not ok\n'; return 1; }
-	printf 'PASS doctor\n'
-}
-
-# feature_mux: drive the three verbs of `smile mux` against the fixture's own tmux session.
-# Spawns three panes, asserts the window count rose by three and each handle is alive, kills them,
-# asserts each is dead and the count is back, then kills one twice to prove kill is idempotent.
-# Only handles this run spawned are ever killed; the session belongs to the fixture.
-feature_mux() {
-	local runid="$1" fixture="$2" backend="$3"
-	local smile session before after rc=0 h handles=""
-	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL mux: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
-	smile="$fixture/smile/smile"
-	[ -x "$smile" ] || { printf 'FAIL mux: %s is not executable\n' "$smile"; return 1; }
-	[ -f "$fixture/smile/py/backends/tmux.py" ] || { printf 'NOT IMPLEMENTED mux (no smile/py/backends/tmux.py stamped)\n'; exit 2; }
-
-	# The backend key is written on every run, empty when --backend is absent, so a value a
-	# previous feature run left behind cannot decide this one.
-	case "$backend" in
-		''|tmux|cmux|herdr|screen) ;;
-		*) printf 'FAIL mux: --backend %s is not a backend name\n' "$backend"; return 1 ;;
-	esac
-	sed -i.bak "s/^backend:.*/backend: $backend/" "$fixture/smile.config.yaml"
-	rm -f "$fixture/smile.config.yaml.bak"
-	git -C "$fixture" diff --quiet || git -C "$fixture" commit -qam "chore: backend ${backend:-auto}"
-
-	# The fixture's own session, so nothing of the user's is ever touched.
-	session=$(mf "$runid" tmux_session)
-	tmux has-session -t "=$session" 2>/dev/null || { printf 'FAIL mux: tmux session %s missing\n' "$session"; return 1; }
-	export SMILE_MUX_SESSION="$session"
-	before=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
-	printf 'windows before: %s\n' "$before"
-	tmux list-windows -t "=$session"
-
-	local n
-	for n in w1 w2 w3; do
-		h=$("$smile" mux spawn "$n" "$fixture" sleep 300) || { printf 'FAIL mux: spawn %s exited %s\n' "$n" "$?"; return 1; }
-		printf 'spawned %s -> %s\n' "$n" "$h"
-		case "$h" in tmux:*|cmux:*|herdr:*) ;; *) printf 'FAIL mux: handle %s does not start with a backend name\n' "$h"; return 1 ;; esac
-		handles="$handles $h"
-	done
-
-	after=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
-	printf 'windows after spawn: %s\n' "$after"
-	tmux list-windows -t "=$session"
-	[ "$after" -eq $((before + 3)) ] || { printf 'FAIL mux: expected %s windows, found %s\n' "$((before + 3))" "$after"; return 1; }
-
-	for h in $handles; do
-		"$smile" mux alive "$h" || { printf 'FAIL mux: alive %s exited %s, want 0\n' "$h" "$?"; return 1; }
-	done
-	printf 'all three alive\n'
-
-	for h in $handles; do
-		"$smile" mux kill "$h" || { printf 'FAIL mux: kill %s exited %s, want 0\n' "$h" "$?"; return 1; }
-	done
-	for h in $handles; do
-		rc=0; "$smile" mux alive "$h" || rc=$?
-		[ "$rc" -eq 1 ] || { printf 'FAIL mux: alive %s after kill exited %s, want 1\n' "$h" "$rc"; return 1; }
-	done
-	after=$(tmux list-windows -t "=$session" -F '#{window_id}' | wc -l | tr -d ' ')
-	printf 'windows after kill: %s\n' "$after"
-	tmux list-windows -t "=$session"
-	[ "$after" -eq "$before" ] || { printf 'FAIL mux: expected %s windows after kill, found %s\n' "$before" "$after"; return 1; }
-
-	h=${handles##* }
-	"$smile" mux kill "$h" || { printf 'FAIL mux: second kill of %s exited %s, want 0\n' "$h" "$?"; return 1; }
-	printf 'second kill of %s exited 0\n' "$h"
-	printf 'PASS mux\n'
-}
-
-# feature_loop: drive the driver through one claim tick and one reap tick with the stub worker.
-# S3 scope: claim, worktree, pane, the workers' PRs, then reap and campaign.complete. The review
-# lane, the merges, and the bead closes the driver does itself land in S4; here the feature closes
-# the beads with `bd close` to stand in for them.
-#
-# The driver runs with HOME pointed at the run's evidence directory, because it writes the trust
-# flag into ~/.claude.json and treehouse pools its worktrees under $HOME; gh and git keep the real
-# config through GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, so the fixture repo is still reachable.
-feature_loop() {
-	local runid="$1" fixture="$2"
-	local smile session home gh_cfg git_cfg gh_token git_name git_email log bead_a bead_b bead_c ready
-	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL loop: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
-	smile="$fixture/smile/smile"
-	[ -f "$fixture/smile/py/run.py" ] || { printf 'NOT IMPLEMENTED loop (no smile/py/run.py stamped)\n'; exit 2; }
-
-	# `up` seeds bd itself; the driver also needs the treehouse pool and .factory, which is what a
-	# user gets from `smile init`. It is idempotent, so a fixture already initialized is untouched.
-	"$smile" init || { printf 'FAIL loop: smile init exited %s\n' "$?"; return 1; }
-	git -C "$fixture" add -A
-	git -C "$fixture" diff --cached --quiet || git -C "$fixture" commit -qm "chore: smile init"
-
-	session=$(mf "$runid" tmux_session)
-	tmux has-session -t "=$session" 2>/dev/null || { printf 'FAIL loop: tmux session %s missing\n' "$session"; return 1; }
-	home="$EVIDENCE_ROOT/$runid/home"
-	gh_cfg="${GH_CONFIG_DIR:-$HOME/.config/gh}"
-	git_cfg="$home/gitconfig"
-	# gh keeps this account's token in the login keyring, which it finds under the real $HOME, so
-	# the token is read here, while HOME is still the real one, and handed to the run as GH_TOKEN.
-	gh_token=$(gh auth token 2>/dev/null) || { printf 'FAIL loop: gh has no token for this account\n'; return 1; }
-	git_name=$(git config --global --get user.name 2>/dev/null || true)
-	git_email=$(git config --global --get user.email 2>/dev/null || true)
-	mkdir -p "$home"
-	# A scratch git config of its own: the gh credential helper, and the real identity so commits
-	# still carry it. Every process in the run also gets GIT_CONFIG_NOSYSTEM=1, because the Xcode
-	# command-line tools put `credential.helper = osxkeychain` in the SYSTEM config, which still
-	# applies under GIT_CONFIG_GLOBAL; under a scratch HOME there is no login keychain, so macOS
-	# would pop a "reset keychain" dialog on every fetch and push. GH_TOKEN answers the gh helper,
-	# so no token is written to disk and the keychain is never touched.
-	printf '[credential]\n\thelper = !gh auth git-credential\n[user]\n\tname = %s\n\temail = %s\n' \
-		"$git_name" "$git_email" > "$git_cfg"
-	# The pane inherits the multiplexer session's environment, not the driver's, so the worker gets
-	# the same scratch world through a wrapper rather than through SMILE_WORKER_CMD alone.
-	cat > "$home/worker-env" <<WRAPEOF
-#!/bin/sh
-export HOME="$home" GIT_CONFIG_GLOBAL="$git_cfg" GIT_CONFIG_NOSYSTEM=1
-export GH_CONFIG_DIR="$gh_cfg" GH_TOKEN="$gh_token"
-exec "$SCRIPT_DIR/stub-worker" "\$@"
-WRAPEOF
-	chmod +x "$home/worker-env"
-	log="$fixture/.factory/events.jsonl"
-
-	# bead A is ready and bead B is blocked by it, so one more independent bead gives the tick
-	# exactly two claimable beads.
-	bead_a=$(mf "$runid" bead_a)
-	bead_b=$(mf "$runid" bead_b)
-	bead_c=$(mf "$runid" bead_c)
-	if [ -z "$bead_c" ]; then
-		bead_c=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd create "bead C: add a third file" --silent)
-		mf_set "$runid" bead_c "$bead_c"
+	resolve_run; require_up
+	[ -f "$source/install.py" ] || die "no install.py under $source; pass --from <checkout that ships install.py>"
+	local logf init_out sha commit
+	logf="$EVIDENCE_ROOT/$RUNID/install-stamp.log"
+	if ! uv run "$source/install.py" "$FIXTURE" > "$logf" 2>&1; then
+		mf_set "$RUNID" install stamp-failed
+		die "install.py failed; read $logf"
 	fi
-	ready=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd ready --json | python3 -c 'import json,sys; print(" ".join(sorted(i["id"] for i in json.load(sys.stdin))))')
-	printf 'beads: a=%s b=%s c=%s ready=[%s]\n' "$bead_a" "$bead_b" "$bead_c" "$ready"
-	[ "$ready" = "$(printf '%s\n%s\n' "$bead_a" "$bead_c" | sort | tr '\n' ' ' | sed 's/ $//')" ] \
-		|| { printf 'FAIL loop: expected A and C ready, got [%s]\n' "$ready"; return 1; }
+	# commit the stamp as a user would; bd init already committed .gitignore, and an unstaged edit
+	# to it makes the stub worker's pull --rebase refuse
+	(cd "$FIXTURE" && git add -A && git commit -q -m "chore: stamp smile" && git push -q origin main)
+	commit=$(git -C "$FIXTURE" rev-parse HEAD)
+	init_out=$("$FIXTURE/smile/smile" init) || die "smile init exited $?; the stamp is incomplete"
+	git -C "$FIXTURE" add -A
+	git -C "$FIXTURE" diff --cached --quiet || git -C "$FIXTURE" commit -qm "chore: smile init"
+	sha=$(git -C "$source" rev-parse --short HEAD 2>/dev/null || echo unknown)
+	mf_set "$RUNID" install stamped stamp_commit "$commit" smile_repo "$source" smile_commit "$sha"
+	jout runid "$RUNID" source "$source" source_commit "$sha" stamp_commit "$commit" \
+		init# "$(printf '%s' "$init_out" | py -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))')" \
+		log "$logf"
+}
 
-	loop_drive() {
-		env HOME="$home" GH_CONFIG_DIR="$gh_cfg" GIT_CONFIG_GLOBAL="$git_cfg" GH_TOKEN="$gh_token" \
-			GIT_CONFIG_NOSYSTEM=1 \
-			SMILE_MUX_SESSION="$session" SMILE_WORKER_CMD="$home/worker-env" \
-			"$smile" run "$@"
-	}
-	# loop_events <bead> <event>: how many such events the log holds for that bead
-	loop_events() {
-		python3 -c '
-import json, sys
-print(sum(1 for o in map(json.loads, open(sys.argv[1])) if o["bead"] == sys.argv[2] and o["event"] == sys.argv[3]))' \
-			"$log" "$1" "$2" 2>/dev/null || printf '0\n'
-	}
-	# loop_prs <bead>...: how many open PRs carry a `Bead: <id>` trailer for one of these beads
-	loop_prs() {
-		(cd "$fixture" && gh pr list --state open --limit 50 --json number,body) | python3 -c '
-import json, sys
-ids = set(sys.argv[1:])
-print(sum(1 for pr in json.load(sys.stdin)
-          if ids & {l.strip()[6:] for l in pr["body"].splitlines() if l.strip().startswith("Bead: ")}))' "$@"
-	}
+# ---------------------------------------------------------------- seed
+SEED_HELP='verify-smile seed --beads <n> [--deps <bead-id>] [--run <runid>]
 
-	printf -- '--- claim tick\n'
-	loop_drive --once || { printf 'FAIL loop: smile run --once exited %s\n' "$?"; return 1; }
-	local b n
-	for b in "$bead_a" "$bead_c"; do
-		for n in bead.claimed worktree.acquired pane.spawned; do
-			[ "$(loop_events "$b" "$n")" -eq 1 ] \
-				|| { printf 'FAIL loop: %s has %s %s events, want 1\n' "$b" "$(loop_events "$b" "$n")" "$n"; return 1; }
-		done
+Create n beads in the fixture. --deps blocks every new bead on that bead, which is how the loop
+order behaviour (bd hides blocked beads) is set up.
+
+Prints one object: runid, beads (the new ids, in creation order), ready (what `bd ready` lists now).'
+
+cmd_seed() {
+	local n="" deps=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--beads) need_value "$1" "${2:-}"; n="$2"; shift ;;
+			--deps) need_value "$1" "${2:-}"; deps="$2"; shift ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile seed --help'" ;;
+		esac
+		shift
 	done
-	printf 'claimed, acquired, spawned once each for %s and %s\n' "$bead_a" "$bead_c"
-	n=$( (ls "$fixture/.factory/runs"/*.json 2>/dev/null || true) | wc -l | tr -d ' ')
-	[ "$n" -eq 2 ] || { printf 'FAIL loop: %s live run state files, want 2\n' "$n"; return 1; }
-	ls "$fixture/.factory/runs"
-
-	printf -- '--- waiting for the workers to open their pull requests\n'
-	local i=0
-	while [ "$i" -lt 40 ]; do
-		n=$(loop_prs "$bead_a" "$bead_c" 2>/dev/null || printf '0\n')
-		if [ "$n" -ge 2 ]; then break; fi
-		sleep 5
+	case "$n" in ''|*[!0-9]*) die "seed needs --beads <n> with n a positive integer" ;; esac
+	[ "$n" -gt 0 ] || die "seed needs --beads <n> with n a positive integer"
+	resolve_run; require_up
+	local i=1 id new="" all ready
+	while [ "$i" -le "$n" ]; do
+		if [ -n "$deps" ]; then
+			id=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd create "bead $i: add a file, after $deps" --deps "$deps" --silent)
+		else
+			id=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd create "bead $i: add a file" --silent)
+		fi
+		new="$new $id"
 		i=$((i + 1))
 	done
-	[ "$n" -ge 2 ] || { printf 'FAIL loop: %s open PRs carry a Bead trailer for A or C after %ss, want 2\n' "$n" "$((i * 5))"; loop_tail; return 1; }
-	(cd "$fixture" && gh pr list --state open --json number,headRefName,body --jq '.[] | "#\(.number) \(.headRefName)"')
-
-	printf -- '--- closing the beads (the review lane that does this lands in S4)\n'
-	(cd "$fixture" && BD_NON_INTERACTIVE=1 bd close "$bead_a" "$bead_c" "$bead_b" >/dev/null 2>&1) || true
-
-	printf -- '--- reap tick\n'
-	loop_drive --once || { printf 'FAIL loop: the reap tick exited %s\n' "$?"; loop_tail; return 1; }
-	for b in "$bead_a" "$bead_c"; do
-		[ "$(loop_events "$b" pane.reaped)" -eq 1 ] \
-			|| { printf 'FAIL loop: %s was not reaped\n' "$b"; loop_tail; return 1; }
-	done
-	n=$( (ls "$fixture/.factory/runs/done"/*.json 2>/dev/null || true) | wc -l | tr -d ' ')
-	[ "$n" -eq 2 ] || { printf 'FAIL loop: %s run files under runs/done, want 2\n' "$n"; loop_tail; return 1; }
-	grep -q '"event":"campaign.complete"' "$log" || { printf 'FAIL loop: no campaign.complete\n'; loop_tail; return 1; }
-	[ ! -e "$fixture/.factory/driver.pid" ] || { printf 'FAIL loop: the pid file outlived the driver\n'; return 1; }
-	loop_tail
-	printf 'PASS loop\n'
+	new="${new# }"
+	all=$(mf "$RUNID" beads)
+	mf_set "$RUNID" beads "$(printf '%s %s' "$all" "$new" | sed 's/^ *//')"
+	ready=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd ready --json | py -c 'import json,sys; print(json.dumps(sorted(i["id"] for i in json.load(sys.stdin))))')
+	jout runid "$RUNID" beads# "$(printf '%s' "$new" | py -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))')" ready# "$ready"
 }
 
-loop_tail() { printf -- '--- last events\n'; tail -15 "$log"; }
+# ---------------------------------------------------------------- the run's scratch world
+# world_up: build the scratch HOME, the git config, and the stub wrappers every driven verb runs
+# in, and set the WORLD_* variables `drive` reads. One place decides what "the same world" is,
+# because the driver, its worker panes, and its `smile review` subprocess must all be in it.
+#
+# HOME points at the run's evidence directory: the driver writes the trust flag into ~/.claude.json
+# and treehouse pools its worktrees under $HOME. gh and git keep the real config through
+# GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, plus GIT_CONFIG_NOSYSTEM=1, because the Xcode command-line
+# tools put `credential.helper = osxkeychain` in the SYSTEM config, and a scratch home has no login
+# keychain.
+#
+# GH_TOKEN answers the gh credential helper. No secret is ever written under the evidence directory,
+# which survives `down`, so the token reaches a pane only through the fixture tmux session's own
+# environment (`tmux set-environment`), which dies with the session, and reaches every process this
+# script spawns through that process's environment. The wrapper files carry HOME and git settings
+# and nothing else.
+world_up() {
+	local git_name git_email
+	WORLD_SMILE="$FIXTURE/smile/smile"
+	WORLD_SESSION=$(mf "$RUNID" tmux_session)
+	tmux has-session -t "=$WORLD_SESSION" 2>/dev/null \
+		|| die "tmux session $WORLD_SESSION is gone; this fixture cannot be driven, run 'verify-smile up' for a new one"
+	WORLD_HOME="$EVIDENCE_ROOT/$RUNID/home"
+	WORLD_GH_CFG="${GH_CONFIG_DIR:-$HOME/.config/gh}"
+	WORLD_GIT_CFG="$WORLD_HOME/gitconfig"
+	WORLD_TOKEN=$(gh auth token 2>/dev/null) || die "gh has no token for this account; run 'gh auth login'"
+	git_name=$(git config --global --get user.name 2>/dev/null || true)
+	git_email=$(git config --global --get user.email 2>/dev/null || true)
+	mkdir -p "$WORLD_HOME"
+	printf '[credential]\n\thelper = !gh auth git-credential\n[user]\n\tname = %s\n\temail = %s\n' \
+		"$git_name" "$git_email" > "$WORLD_GIT_CFG"
+	session_env "$WORLD_SESSION" GH_TOKEN "$WORLD_TOKEN"
+	session_env "$WORLD_SESSION" GH_CONFIG_DIR "$WORLD_GH_CFG"
+	world_wrapper "$WORLD_HOME/worker-env" "$SCRIPT_DIR/stub-worker"
+	world_wrapper "$WORLD_HOME/reviewer-env" "$SCRIPT_DIR/stub-reviewer"
+	WORLD_WORKER="$WORLD_HOME/worker-env"
+	WORLD_REVIEW_CMD="$WORLD_HOME/reviewer-env"
+	WORLD_LOG="$FIXTURE/.factory/events.jsonl"
+}
+
+# session_env <session> <name> <value>: set one variable in the tmux session's own environment,
+# which every pane the driver opens in it inherits. An empty value unsets it.
+session_env() {
+	if [ -n "${3:-}" ]; then
+		tmux set-environment -t "=$1" "$2" "$3"
+	else
+		tmux set-environment -t "=$1" -u "$2" 2>/dev/null || true
+	fi
+}
+
+# world_wrapper <path> <target>: a wrapper that re-enters the scratch world and execs the stub. A
+# pane inherits the multiplexer session's environment, not the driver's, and `smile review` hands
+# the reviewer its own environment, so both stubs are entered through one of these. It carries no
+# secret: GH_TOKEN and GH_CONFIG_DIR ride the session environment or the spawning process's own.
+world_wrapper() {
+	cat > "$1" <<WRAPEOF
+#!/bin/sh
+export HOME="$WORLD_HOME" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1
+exec "$2" "\$@"
+WRAPEOF
+	chmod +x "$1"
+}
+
+# drive <args...>: the fixture's own smile shim, in that world.
+drive() {
+	env HOME="$WORLD_HOME" GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" \
+		GH_TOKEN="$WORLD_TOKEN" GIT_CONFIG_NOSYSTEM=1 SMILE_MUX_SESSION="$WORLD_SESSION" \
+		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="${WORLD_REVIEW_CMD}" \
+		SMILE_STUB_CHANGES_ONCE="${WORLD_CHANGES_ONCE:-0}" \
+		"$WORLD_SMILE" "$@"
+}
+
+# stub_env <session> <sleep> <crash beads> <crash times> <changes once>: shape the stubs for one
+# drive. A pane inherits the tmux SERVER's environment, not the driver's, so these must be set on
+# the session or --worker-crash and --worker-sleep are silent no-ops.
+stub_env() {
+	session_env "$1" SMILE_STUB_SLEEP "$2"
+	session_env "$1" SMILE_STUB_CRASH_BEADS "$3"
+	session_env "$1" SMILE_STUB_CRASH_TIMES "$4"
+	session_env "$1" SMILE_STUB_CHANGES_ONCE "$5"
+}
+
+# ---------------------------------------------------------------- tick
+TICK_HELP='verify-smile tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>] [--run <runid>]
+
+One `smile run --once` in the fixture, with the stub worker and the stub reviewer wired in through
+the run scratch-HOME wrapper. The flags shape the stubs for this tick only:
+
+  --reviewer-changes-once   the stub reviewer answers REQUEST CHANGES the first time it sees a PR
+  --worker-crash <bead>     the stub worker exits 3 for that bead instead of working
+  --worker-sleep <s>        the stub worker sleeps s seconds first, so its pane stays alive
+
+Prints one object: runid, exit (the tick exit code), events (the event objects appended during it).
+A non-zero exit is reported in the JSON, not as a failure: a tick that hits a gh hiccup is normal
+and the next tick re-reads the world.'
+
+cmd_tick() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--reviewer-changes-once) WORLD_CHANGES_ONCE=1 ;;
+			--worker-crash) need_value "$1" "${2:-}"; WORLD_CRASH_BEADS="$2"; WORLD_CRASH_TIMES=99; shift ;;
+			--worker-sleep) need_value "$1" "${2:-}"; WORLD_SLEEP="$2"; shift ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile tick --help'" ;;
+		esac
+		shift
+	done
+	resolve_run; require_up; require_stamped
+	world_up
+	local before rc=0 appended
+	before=$(wc -l < "$WORLD_LOG" 2>/dev/null | tr -d ' ' || printf '0')
+	# the stub shape rides the session environment, which is what a pane actually inherits
+	stub_env "$WORLD_SESSION" "${WORLD_SLEEP:-0}" "${WORLD_CRASH_BEADS:-}" \
+		"${WORLD_CRASH_TIMES:-1}" "${WORLD_CHANGES_ONCE:-0}"
+	drive run --once >>"$EVIDENCE_ROOT/$RUNID/tick.log" 2>&1 || rc=$?
+	stub_env "$WORLD_SESSION" "" "" "" ""   # for this tick only: the next one shapes them again
+	appended=$(tail -n "+$((before + 1))" "$WORLD_LOG" 2>/dev/null | py -c '
+import json, sys
+print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')
+	jout runid "$RUNID" exit# "$rc" events# "$appended"
+}
+
+# ---------------------------------------------------------------- review
+REVIEW_HELP='verify-smile review <n> [--reviewer stub|real|<argv...>] [--run <runid>]
+
+One `smile review <n>` in the fixture, the lane'"'"'s own entry point, with the reviewer chosen:
+
+  --reviewer stub          the stub reviewer (the default), the same one `tick` wires
+  --reviewer real          the signed-in `claude -p`, with the REAL HOME for that subprocess only,
+                           because the scratch HOME is not signed in and every attempt would fail
+  --reviewer <argv...>     any command; everything after the flag is the argv
+
+Prints one object: runid, pr, reviewer, exit, stderr (its lines), events (appended during the call),
+and review (the path of reviews/<n>-<sha>.md, or the .failed.md when the review named no verdict).'
+
+cmd_review() {
+	local pr="" mode="stub" argv=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--reviewer)
+				need_value "$1" "${2:-}"; shift
+				case "$1" in
+					stub|real) mode="$1"; shift ;;
+					*) mode="argv"; while [ $# -gt 0 ] && [ "$1" != "--run" ]; do argv+=("$1"); shift; done ;;
+				esac
+				continue ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			-*) die "unknown flag $1; see 'verify-smile review --help'" ;;
+			*) pr="$1" ;;
+		esac
+		shift
+	done
+	case "$pr" in ''|*[!0-9]*) die "review needs a pull request number; 'verify-smile prs' lists them" ;; esac
+	resolve_run; require_up; require_stamped
+	world_up
+	local before rc=0 appended errf found
+	before=$(wc -l < "$WORLD_LOG" 2>/dev/null | tr -d ' ' || printf '0')
+	errf="$EVIDENCE_ROOT/$RUNID/review-$pr.stderr"
+	case "$mode" in
+		real) drive_real review "$pr" >>"$EVIDENCE_ROOT/$RUNID/review.log" 2>"$errf" || rc=$? ;;
+		*)
+			[ "$mode" = "stub" ] || WORLD_REVIEW_CMD="${argv[*]}"
+			drive review "$pr" >>"$EVIDENCE_ROOT/$RUNID/review.log" 2>"$errf" || rc=$? ;;
+	esac
+	appended=$(tail -n "+$((before + 1))" "$WORLD_LOG" 2>/dev/null | py -c '
+import json, sys
+print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')
+	found=$(py -c '
+import glob, os, sys
+hits = sorted(glob.glob(os.path.join(sys.argv[1], ".factory", "reviews", sys.argv[2] + "-*.md")),
+              key=os.path.getmtime)
+print(hits[-1] if hits else "")' "$FIXTURE" "$pr")
+	jout runid "$RUNID" pr "$pr" reviewer "$mode" exit# "$rc" \
+		stderr# "$(py -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read().splitlines()))' "$errf")" \
+		events# "$appended" review "$found"
+}
+
+# drive_real <args...>: `drive`, but with the user'"'"'s real HOME and gh config for this one
+# subprocess. The real reviewer is the signed-in `claude`, and the scratch HOME is not signed in.
+drive_real() {
+	env GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1 \
+		GH_TOKEN="$WORLD_TOKEN" SMILE_MUX_SESSION="$WORLD_SESSION" \
+		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="" \
+		"$WORLD_SMILE" "$@"
+}
+
+# ---------------------------------------------------------------- events
+EVENTS_HELP='verify-smile events [--bead <id>] [--since <n>] [--run <runid>]
+
+The fixture event log, one JSON object per line, oldest first. --bead keeps only that bead'"'"'s
+lines; --since skips the first n lines of the log, which is how a verifier reads only what a
+drive appended.'
+
+cmd_events() {
+	local bead="" since=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--bead) need_value "$1" "${2:-}"; bead="$2"; shift ;;
+			--since) need_value "$1" "${2:-}"; since="$2"; shift ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile events --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	local logf="$FIXTURE/.factory/events.jsonl"
+	[ -f "$logf" ] || die "no event log at $logf; run 'verify-smile stamp' then 'verify-smile tick'"
+	py -c '
+import json, sys
+bead, since = sys.argv[2] or None, int(sys.argv[3])
+for line in list(open(sys.argv[1]))[since:]:
+    if not line.strip():
+        continue
+    o = json.loads(line)
+    if bead and o.get("bead") != bead:
+        continue
+    print(json.dumps(o))' "$logf" "$bead" "$since"
+}
+
+# ---------------------------------------------------------------- runs
+RUNS_HELP='verify-smile runs [--run <runid>]
+
+The driver'"'"'s run state files, grouped by the directory they sit in: live, waiting, done,
+crashed. Prints one object whose four keys hold the parsed state files.'
+
+cmd_runs() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile runs --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	py -c '
+import json, os, sys
+base = os.path.join(sys.argv[1], ".factory", "runs")
+out = {}
+for key, d in (("live", base), ("waiting", base + "/waiting"),
+               ("done", base + "/done"), ("crashed", base + "/crashed")):
+    items = []
+    for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        p = os.path.join(d, n)
+        if not n.endswith(".json") or not os.path.isfile(p):
+            continue
+        try:
+            items.append(json.load(open(p)))
+        except ValueError:
+            items.append({"file": n, "parse": "unreadable"})
+    out[key] = items
+print(json.dumps(out))' "$FIXTURE"
+}
+
+# ---------------------------------------------------------------- panes
+PANES_HELP='verify-smile panes [--run <runid>]
+
+The windows in the fixture'"'"'s own tmux session, one object per line: window_id, name, dead.
+The session `up` opened is always one of them, so a pane count is read as a delta.'
+
+cmd_panes() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile panes --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	local session
+	session=$(mf "$RUNID" tmux_session)
+	tmux has-session -t "=$session" 2>/dev/null \
+		|| die "tmux session $session is gone; run 'verify-smile doctor --run $RUNID'"
+	tmux list-windows -t "=$session" -F '#{window_id} #{window_name} #{pane_dead}' | py -c '
+import json, sys
+for line in sys.stdin:
+    wid, name, dead = line.rstrip("\n").split(" ", 2)
+    print(json.dumps({"window_id": wid, "name": name, "dead": dead == "1"}))'
+}
+
+# ---------------------------------------------------------------- prs
+PRS_HELP='verify-smile prs [--run <runid>]
+
+Every pull request on the fixture repo, any state, one object per line: number, state, branch,
+bead (from the `Bead:` trailer, null when it carries none), labels, mergedAt, mergeCommit (the
+merge commit SHA, null until it lands). This is GitHub'"'"'s own answer, which is what proves a
+merge; the driver saying it merged is not proof, and `mergeCommit` is what a `pr.merged` sha is
+checked against.'
+
+cmd_prs() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile prs --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	(cd "$FIXTURE" && gh pr list --state all --limit 100 --json number,state,headRefName,body,labels,mergedAt,mergeCommit) | py -c '
+import json, sys
+for pr in sorted(json.load(sys.stdin), key=lambda p: p["number"]):
+    beads = [l.strip()[6:] for l in pr["body"].splitlines() if l.strip().startswith("Bead: ")]
+    print(json.dumps({"number": pr["number"], "state": pr["state"],
+                      "branch": pr["headRefName"], "bead": beads[-1] if beads else None,
+                      "labels": [l["name"] for l in pr["labels"]],
+                      "mergedAt": pr["mergedAt"],
+                      "mergeCommit": (pr.get("mergeCommit") or {}).get("oid")}))'
+}
+
+# ---------------------------------------------------------------- issues
+ISSUES_HELP='verify-smile issues [--run <runid>]
+
+Every issue labeled `review` on the fixture repo, any state, one object per line: number, state,
+title, pr (from the `PR: #<n>` line the lane writes, null when it carries none).'
+
+cmd_issues() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile issues --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	(cd "$FIXTURE" && gh issue list --label review --state all --limit 100 --json number,state,title,body 2>/dev/null || printf '[]') | py -c '
+import json, sys
+for i in sorted(json.load(sys.stdin), key=lambda i: i["number"]):
+    prs = [l.strip()[5:] for l in i["body"].splitlines() if l.strip().startswith("PR: #")]
+    print(json.dumps({"number": i["number"], "state": i["state"], "title": i["title"],
+                      "pr": int(prs[-1]) if prs else None}))'
+}
+
+# ---------------------------------------------------------------- gate
+GATE_HELP='verify-smile gate <status|all|none|auto|bead <id> on|off> [--run <runid>]
+
+Delegates to `smile gate` in the fixture, in the run world. Prints one object: argv, exit, stdout
+(the lines it printed). `gate status` prints `mode <m>` and one `bead <id>` line per gated bead,
+so a verifier reads the mode straight out of the stdout list.'
+
+cmd_gate() {
+	local args=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) args+=("$1") ;;
+		esac
+		shift
+	done
+	[ "${#args[@]}" -gt 0 ] || die "gate needs a subcommand; see 'verify-smile gate --help'"
+	resolve_run; require_up; require_stamped
+	world_up
+	local out rc=0
+	out=$(drive gate "${args[@]}" 2>/dev/null) || rc=$?
+	jout runid "$RUNID" \
+		argv# "$(py -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${args[@]}")" \
+		exit# "$rc" \
+		stdout# "$(printf '%s' "$out" | py -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))')"
+}
+
+# ---------------------------------------------------------------- close-bead
+CLOSE_HELP='verify-smile close-bead <id> [--run <runid>]
+
+Close one bead with `bd close`, standing in for whatever would have closed it. Prints one object:
+bead, status (read back from `bd list --all --json`, not from bd'"'"'s own stdout).'
+
+cmd_close_bead() {
+	local bead=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			-*) die "unknown flag $1; see 'verify-smile close-bead --help'" ;;
+			*) bead="$1" ;;
+		esac
+		shift
+	done
+	[ -n "$bead" ] || die "close-bead needs a bead id; 'verify-smile seed' prints the ids it created"
+	resolve_run; require_up
+	(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd close "$bead" >/dev/null 2>&1) \
+		|| die "bd close $bead failed; check that the bead exists with 'bd list --all' in $FIXTURE"
+	local status
+	status=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd list --all --json | py -c '
+import json, sys
+print(next((b["status"] for b in json.load(sys.stdin) if b["id"] == sys.argv[1]), ""))' "$bead")
+	jout runid "$RUNID" bead "$bead" status "$status"
+}
+
+# ---------------------------------------------------------------- kill-pane
+KILLPANE_HELP='verify-smile kill-pane <bead> [--run <runid>]
+
+Kill the pane the driver spawned for that bead, through `smile mux kill` with the handle from the
+bead'"'"'s run state file. This is how a crash is staged: a pane that dies with its bead still open
+is what the driver reaps as `worker.crashed`. Prints one object: bead, handle, exit.
+
+A bead with no live or waiting run state file has no pane to kill: that prints one object carrying
+an `error` key on stdout and exits 1, so a script reads the refusal as JSON like every other answer.'
+
+cmd_kill_pane() {
+	local bead=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			-*) die "unknown flag $1; see 'verify-smile kill-pane --help'" ;;
+			*) bead="$1" ;;
+		esac
+		shift
+	done
+	[ -n "$bead" ] || die "kill-pane needs a bead id; 'verify-smile runs' lists the live beads"
+	resolve_run; require_up; require_stamped
+	world_up
+	local handle rc=0
+	handle=$(py -c '
+import json, os, sys
+base = os.path.join(sys.argv[1], ".factory", "runs")
+for d in (base, base + "/waiting"):
+    p = os.path.join(d, sys.argv[2] + ".json")
+    if os.path.isfile(p):
+        print(json.load(open(p))["handle"])
+        break' "$FIXTURE" "$bead")
+	if [ -z "$handle" ]; then
+		jout runid "$RUNID" bead "$bead" \
+			error "no live or waiting run state file for bead $bead; 'verify-smile runs' lists them"
+		exit 1
+	fi
+	drive mux kill "$handle" || rc=$?
+	jout runid "$RUNID" bead "$bead" handle "$handle" exit# "$rc"
+}
+
+# ---------------------------------------------------------------- time
+TIME_HELP='verify-smile time <smile args...> [--n <runs>] [--run <runid>]
+
+Run the fixture'"'"'s own `smile` shim n times (default 5) in the run world and report the median
+wall time. This is also the way to run any smile command a map page names: `time doctor --n 1`
+runs `smile doctor` once and prints its stdout.
+
+Prints one object: argv, n, median_ms, samples_ms, exit (of the last run), stdout (of the last run).'
+
+cmd_time() {
+	local n=5 args=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--n) need_value "$1" "${2:-}"; n="$2"; shift ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) args+=("$1") ;;
+		esac
+		shift
+	done
+	[ "${#args[@]}" -gt 0 ] || die "time needs the smile arguments to run; see 'verify-smile time --help'"
+	case "$n" in ''|*[!0-9]*) die "--n takes a positive integer" ;; esac
+	[ "$n" -gt 0 ] || die "--n takes a positive integer"
+	resolve_run; require_up; require_stamped
+	world_up
+	local i=1 t0 t1 rc=0 out="" samples=""
+	while [ "$i" -le "$n" ]; do
+		t0=$(py -c 'import time; print(int(time.time()*1000))')
+		rc=0
+		out=$(drive "${args[@]}" 2>/dev/null) || rc=$?
+		t1=$(py -c 'import time; print(int(time.time()*1000))')
+		samples="$samples $((t1 - t0))"
+		i=$((i + 1))
+	done
+	jout runid "$RUNID" \
+		argv# "$(py -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${args[@]}")" \
+		n# "$n" \
+		median_ms# "$(printf '%s' "$samples" | py -c '
+import statistics, sys
+print(int(statistics.median([int(x) for x in sys.stdin.read().split()])))')" \
+		samples_ms# "$(printf '%s' "$samples" | py -c 'import json,sys; print(json.dumps([int(x) for x in sys.stdin.read().split()]))')" \
+		exit# "$rc" \
+		stdout# "$(printf '%s' "$out" | py -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))')"
+}
+
+# ---------------------------------------------------------------- trust
+TRUST_HELP='verify-smile trust [--run <runid>]
+
+The trust entries the driver wrote into the run'"'"'s scratch ~/.claude.json. Prints one object:
+path, projects (the worktree path to hasTrustDialogAccepted map). Nothing under the real home is
+ever read or written; that is the point of the scratch HOME.'
+
+cmd_trust() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile trust --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	local f="$EVIDENCE_ROOT/$RUNID/home/.claude.json"
+	[ -f "$f" ] || die "no $f yet; the driver writes it before its first spawn, so run 'verify-smile tick' first"
+	py -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(json.dumps({"path": sys.argv[1],
+                  "projects": {k: v.get("hasTrustDialogAccepted")
+                               for k, v in m.get("projects", {}).items()}}))' "$f"
+}
+
+# ---------------------------------------------------------------- evidence
+EVIDENCE_HELP='verify-smile evidence [--run <runid>]
+
+The run'"'"'s evidence directory and what is in it. Prints one object: dir, files (name and bytes,
+one entry per top-level item, directories counted as their entry count). The directory survives
+`down`; it is where a proof gets pasted from.'
+
+cmd_evidence() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile evidence --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	py -c '
+import json, os, sys
+d = sys.argv[1]
+files = []
+for n in sorted(os.listdir(d)):
+    p = os.path.join(d, n)
+    if os.path.isdir(p):
+        files.append({"name": n + "/", "entries": len(os.listdir(p))})
+    else:
+        files.append({"name": n, "bytes": os.path.getsize(p)})
+print(json.dumps({"dir": d, "files": files}))' "$EVIDENCE_ROOT/$RUNID"
+}
+
+# ---------------------------------------------------------------- doctor
+DOCTOR_HELP='verify-smile doctor [--run <runid>]
+
+The one verb that judges. Answers "is this fixture worth driving?", read-only: the driving
+machine'"'"'s tools, the manifest state, the repo on GitHub, the tmux session, the bd database, and,
+when the fixture is stamped, `smile doctor` run through the stamped shim the way a user runs it.
+
+Prints one object: runid, ok, checks (name, ok, detail each). Exit 0 when every check passed, 1
+when any failed. A failed check means: tear this run down and start a new one, never repair in
+place.'
+
+DOCTOR_CHECKS=""
+dcheck() {   # dcheck <name> <ok 0|1> <detail>
+	DOCTOR_CHECKS="$DOCTOR_CHECKS$(py -c '
+import json, sys
+print(json.dumps({"name": sys.argv[1], "ok": sys.argv[2] == "0", "detail": sys.argv[3]}))' "$1" "$2" "$3")
+"
+}
+
+cmd_doctor() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile doctor --help'" ;;
+		esac
+		shift
+	done
+	resolve_run
+	local t rc state repo session ready out
+
+	for t in uv git gh bd treehouse tmux; do
+		if command -v "$t" >/dev/null 2>&1; then dcheck "tool.$t" 0 "on PATH"; else dcheck "tool.$t" 1 "not on PATH"; fi
+	done
+	rc=0; gh auth status >/dev/null 2>&1 || rc=1
+	dcheck "gh.auth" "$rc" "$([ "$rc" -eq 0 ] && printf 'logged in' || printf 'run: gh auth login')"
+
+	state=$(mf "$RUNID" state)
+	dcheck "run.state" "$([ "$state" = "up" ] && printf 0 || printf 1)" "state $state"
+
+	repo=$(mf "$RUNID" repo)
+	out=$(gh repo view "$repo" --json nameWithOwner,isPrivate --jq '"\(.nameWithOwner) private=\(.isPrivate)"' 2>/dev/null || true)
+	dcheck "repo" "$([ "$out" = "$repo private=true" ] && printf 0 || printf 1)" "${out:-not found}"
+
+	session=$(mf "$RUNID" tmux_session)
+	rc=0; tmux has-session -t "=$session" 2>/dev/null || rc=1
+	dcheck "tmux.session" "$rc" "$session"
+
+	rc=0; [ -d "$FIXTURE/.git" ] || rc=1
+	dcheck "fixture.clone" "$rc" "$FIXTURE"
+
+	if ready=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd ready --json 2>/dev/null | py -c 'import json,sys; print(" ".join(sorted(i["id"] for i in json.load(sys.stdin))))'); then
+		dcheck "bd.ready" 0 "ready: [${ready}]"
+	else
+		dcheck "bd.ready" 1 "bd ready failed in the fixture"
+	fi
+
+	if [ "$(mf "$RUNID" install)" = "stamped" ]; then
+		rc=0; [ -x "$FIXTURE/smile/smile" ] || rc=1
+		dcheck "stamp.shim" "$rc" "$FIXTURE/smile/smile"
+		rc=0; out=$("$FIXTURE/smile/smile" doctor 2>&1) || rc=$?
+		dcheck "smile.doctor" "$rc" "$(printf '%s' "$out" | tr '\n' '; ')"
+	else
+		dcheck "stamp.shim" 0 "not stamped (install=$(mf "$RUNID" install))"
+	fi
+
+	local checks ok
+	checks=$(printf '%s' "$DOCTOR_CHECKS" | py -c 'import json,sys; print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')
+	ok=$(printf '%s' "$checks" | py -c 'import json,sys; print("true" if all(c["ok"] for c in json.load(sys.stdin)) else "false")')
+	jout runid "$RUNID" ok# "$ok" checks# "$checks"
+	[ "$ok" = "true" ] || { printf 'verify-smile: doctor found a failing check on run %s; tear it down with `verify-smile down --run %s` and start a new one\n' "$RUNID" "$RUNID" >&2; exit 1; }
+}
 
 # ---------------------------------------------------------------- down
-# repo_disposed <owner/name>: true when the repo is gone, or renamed to -trash and archived.
-# `gh repo view <old-name>` follows GitHub's rename redirect, so compare nameWithOwner instead of
-# trusting the exit code.
+DOWN_HELP='verify-smile down [--run <runid>] [--dry-run]
+
+Collect evidence, then dispose of the fixture: kill only the tmux session this run created, remove
+only its own temp directory, and delete the repo with `gh repo delete --yes`. When deletion fails
+(a token without delete_repo), fall back to renaming the repo to -trash and archiving it, and print
+the `gh auth refresh` command that enables real deletion.
+
+--dry-run prints what it would dispose of and touches nothing.
+
+Evidence survives. Prints one object: runid, disposal, evidence, session_killed, tmp_removed. Safe
+to run twice; refuses a runid with no manifest, and refuses to mark a run down until the repo is
+really gone, so a partial teardown stays retryable.'
+
+# repo_disposed <owner/name>: prints `gone` or `archived-renamed` and exits 0 when the repo is no
+# longer live under its own name. `gh repo view <old-name>` follows GitHub's rename redirect, so
+# compare nameWithOwner instead of trusting the exit code.
 repo_disposed() {
 	local repo="$1" actual archived
 	actual=$(gh repo view "$repo" --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
@@ -450,19 +901,42 @@ repo_disposed() {
 }
 
 cmd_down() {
-	local runid="${1:-}"
-	[ -n "$runid" ] || die "usage: verify-smile down <runid>"
-	require_manifest "$runid"
-	local evidence="$EVIDENCE_ROOT/$runid"
-	if [ "$(mf "$runid" state)" = "down" ]; then
-		printf 'evidence kept at %s (already down)\n' "$evidence"
+	DRY=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--dry-run) DRY=1 ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			-*) die "unknown flag $1; see 'verify-smile down --help'" ;;
+			*) RUNID="$1" ;;
+		esac
+		shift
+	done
+	resolve_run
+	cmd_down_inner
+}
+
+cmd_down_inner() {
+	local evidence="$EVIDENCE_ROOT/$RUNID"
+	local fixture tmp session repo
+	fixture=$(mf "$RUNID" fixture)
+	tmp=$(mf "$RUNID" tmp)
+	session=$(mf "$RUNID" tmux_session)
+	repo=$(mf "$RUNID" repo)
+
+	if [ "$(mf "$RUNID" state)" = "down" ]; then
+		jout runid "$RUNID" disposal "$(mf "$RUNID" disposal)" evidence "$evidence" \
+			session_killed# false tmp_removed# false note "already down"
 		return 0
 	fi
-	local fixture tmp session repo
-	fixture=$(mf "$runid" fixture)
-	tmp=$(mf "$runid" tmp)
-	session=$(mf "$runid" tmux_session)
-	repo=$(mf "$runid" repo)
+
+	if [ "$DRY" -eq 1 ]; then
+		jout runid "$RUNID" dry_run# true repo "$repo" \
+			would_delete_repo# "$(repo_disposed "$repo" >/dev/null && printf false || printf true)" \
+			would_kill_session "$(tmux has-session -t "=$session" 2>/dev/null && printf '%s' "$session" || printf 'none')" \
+			would_remove_tmp "$([ -d "$tmp" ] && printf '%s' "$tmp" || printf 'none')" \
+			evidence "$evidence"
+		return 0
+	fi
 
 	log "collecting evidence into $evidence"
 	if [ -d "$fixture/.git" ]; then
@@ -475,7 +949,7 @@ cmd_down() {
 				|| { rm -f "$evidence/prs.json.tmp"; log "gh pr list failed; prs.json not written"; }
 		fi
 		if [ ! -e "$evidence/beads.json" ] && [ -d "$fixture/.beads" ]; then
-			(cd "$fixture" && bd list --json > "$evidence/beads.json.tmp" 2>/dev/null) \
+			(cd "$fixture" && bd list --all --json > "$evidence/beads.json.tmp" 2>/dev/null) \
 				&& mv "$evidence/beads.json.tmp" "$evidence/beads.json" \
 				|| { rm -f "$evidence/beads.json.tmp"; log "bd list failed; beads.json not written"; }
 		fi
@@ -486,14 +960,19 @@ cmd_down() {
 	# an older loop feature linked the real home into the run's scratch home; never keep that
 	[ ! -L "$evidence/home/Library" ] || rm -f "$evidence/home/Library"
 
+	local killed=false removed=false
 	if [ -n "$session" ] && tmux has-session -t "=$session" 2>/dev/null; then
 		log "killing tmux session $session"
+		# the token lives only in this session's environment; drop it before the kill, so a kill
+		# that somehow fails still leaves no secret behind
+		session_env "$session" GH_TOKEN ""
 		tmux kill-session -t "=$session"
+		killed=true
 	fi
 
 	if [ -n "$tmp" ] && [ -d "$tmp" ]; then
 		case "$tmp" in
-			*/smile-verify.*) rm -rf "$tmp" ;;
+			*/smile-verify.*) rm -rf "$tmp"; removed=true ;;
 			*) die "refusing to remove unexpected tmp path $tmp" ;;
 		esac
 	fi
@@ -501,7 +980,7 @@ cmd_down() {
 	local disposal
 	if disposal=$(repo_disposed "$repo"); then
 		if [ "$disposal" = "gone" ]; then
-			[ "$(mf "$runid" stage)" = "names" ] && disposal="never-created" || disposal="deleted"
+			[ "$(mf "$RUNID" stage)" = "names" ] && disposal="never-created" || disposal="deleted"
 		fi
 		log "repo already disposed ($disposal)"
 	elif gh repo delete "$repo" --yes >/dev/null 2>&1; then
@@ -512,57 +991,128 @@ cmd_down() {
 		gh repo rename "$(basename "$repo")-trash" --repo "$repo" --yes >/dev/null 2>&1 || true
 		gh repo archive "$repo-trash" --yes >/dev/null 2>&1 || true
 		disposal="archived-renamed"
-		printf 'verify-smile: run `gh auth refresh -h github.com -s delete_repo` to enable true deletion of fixture repos\n'
+		printf 'verify-smile: run `gh auth refresh -h github.com -s delete_repo` to enable true deletion of fixture repos\n' >&2
 	fi
 	repo_disposed "$repo" >/dev/null \
-		|| die "repo $repo still exists and is not archived as -trash; run 'verify-smile down $runid' again"
+		|| die "repo $repo still exists and is not archived as -trash; run 'verify-smile down --run $RUNID' again"
 
-	mf_set "$runid" state down disposal "$disposal"
+	mf_set "$RUNID" state down disposal "$disposal"
 	[ -d "$evidence" ] || die "evidence dir vanished: $evidence"
-	printf 'evidence kept at %s\n' "$evidence"
+	jout runid "$RUNID" disposal "$disposal" evidence "$evidence" \
+		session_killed# "$killed" tmp_removed# "$removed"
 }
 
 # ---------------------------------------------------------------- list
+LIST_HELP='verify-smile list
+
+Known runs, oldest first, one object per line: runid, state, repo, fixture, install, disposal.'
+
 cmd_list() {
+	[ $# -eq 0 ] || die "list takes no arguments; see 'verify-smile list --help'"
 	local r
 	for r in $(each_run); do
-		printf '%s\t%s\t%s\n' "$r" "$(mf "$r" state)" "$(mf "$r" repo)"
+		jout runid "$r" state "$(mf "$r" state)" repo "$(mf "$r" repo)" \
+			fixture "$(mf "$r" fixture)" install "$(mf "$r" install)" disposal "$(mf "$r" disposal)"
 	done
 }
 
 # ---------------------------------------------------------------- gc
+GC_HELP='verify-smile gc [--dry-run]
+
+Delete leftover smile-verify-*-trash repos, the fallback disposal `down` uses when deletion is not
+permitted. --dry-run lists them and deletes nothing. Prints one object: trash (the names), deleted,
+failed, dry_run.'
+
 cmd_gc() {
 	local dry=0
-	[ "${1:-}" = "--dry-run" ] && dry=1
-	local owner names count
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--dry-run) dry=1 ;;
+			*) die "unknown flag $1; see 'verify-smile gc --help'" ;;
+		esac
+		shift
+	done
+	local owner names deleted="" failed="" n
 	owner=$(gh api user --jq .login)
 	names=$(gh repo list "$owner" --limit 500 --json name --jq '.[].name | select(startswith("smile-verify-") and endswith("-trash"))')
-	count=$(printf '%s\n' "$names" | grep -c . || true)
-	if [ "$count" -eq 0 ]; then
-		printf 'no smile-verify-*-trash repos\n'
-		return 0
-	fi
-	if [ "$dry" -eq 1 ]; then
-		printf '%s\n' "$names"
-		printf '%s trash repo(s); rerun without --dry-run to delete\n' "$count"
-		return 0
-	fi
-	if gh api -i user 2>/dev/null | grep -i '^x-oauth-scopes:' | grep -q delete_repo; then
-		local n
+	if [ "$dry" -eq 0 ]; then
 		for n in $names; do
-			gh repo delete "$owner/$n" --yes >/dev/null 2>&1 && printf 'deleted %s\n' "$n" || printf 'failed %s\n' "$n"
+			if gh repo delete "$owner/$n" --yes >/dev/null 2>&1; then deleted="$deleted $n"; else failed="$failed $n"; fi
 		done
-	else
-		printf '%s trash repo(s) exist; the token lacks delete_repo\n' "$count"
-		printf 'run `gh auth refresh -h github.com -s delete_repo` then `verify-smile gc`\n'
+		if [ -n "$failed" ]; then
+			printf 'verify-smile: some trash repos could not be deleted; run `gh auth refresh -h github.com -s delete_repo` then `verify-smile gc`\n' >&2
+		fi
 	fi
+	tolist() { printf '%s' "$1" | py -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))'; }
+	jout trash# "$(tolist "$names")" deleted# "$(tolist "$deleted")" failed# "$(tolist "$failed")" \
+		dry_run# "$([ "$dry" -eq 1 ] && printf true || printf false)"
 }
 
-case "${1:-}" in
-	up) shift; cmd_up "$@" ;;
-	feature) shift; cmd_feature "$@" ;;
-	down) shift; cmd_down "$@" ;;
-	list) shift; cmd_list "$@" ;;
-	gc) shift; cmd_gc "$@" ;;
-	*) sed -n '2,8p' "$0"; exit 1 ;;
+# ---------------------------------------------------------------- dispatch
+USAGE='verify-smile: composable primitives for driving the SMILE factory against a throwaway fixture.
+
+  Fixture   up                              create repo, clone, bd, tmux session
+            doctor                          is this fixture worth driving? the only PASS/FAIL verb
+            list                            known runs and their state
+            down [--dry-run]                collect evidence, dispose of the fixture
+            gc [--dry-run]                  delete leftover smile-verify-*-trash repos
+
+  Setup     stamp [--from <checkout>]       stamp SMILE into the fixture and smile init
+            seed --beads <n> [--deps <id>]  create beads
+
+  Drive     tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>]
+            review <n> [--reviewer stub|real|<argv...>]
+            gate <status|all|none|auto|bead <id> on|off>
+            close-bead <id>
+            kill-pane <bead>
+            time <smile args...> [--n <runs>]
+
+  Observe   events [--bead <id>] [--since <n>]
+            runs | panes | prs | issues | trust | evidence
+
+Every verb takes --run <runid> and uses the newest run when it is left out, prints JSON on stdout,
+and prints one stderr line and exits non-zero on failure. `<verb> --help` prints its own usage.
+Read features/README.md for what a given behaviour'"'"'s proof looks like.'
+
+VERB="${1:-}"
+RUNID=""
+FIXTURE=""
+DRY=0
+[ -n "$VERB" ] || { printf '%s\n' "$USAGE"; exit 1; }
+shift
+
+helped() {   # helped <HELP text> "$@": print help and exit when --help is among the arguments
+	local h="$1"; shift
+	local a
+	for a in "$@"; do
+		[ "$a" = "--help" ] || [ "$a" = "-h" ] || continue
+		printf '%s\n' "$h"
+		exit 0
+	done
+}
+
+case "$VERB" in
+	up)         helped "$UP_HELP" "$@";       cmd_up "$@" ;;
+	stamp)      helped "$STAMP_HELP" "$@";    cmd_stamp "$@" ;;
+	seed)       helped "$SEED_HELP" "$@";     cmd_seed "$@" ;;
+	tick)       helped "$TICK_HELP" "$@";     cmd_tick "$@" ;;
+	review)     helped "$REVIEW_HELP" "$@";  cmd_review "$@" ;;
+	events)     helped "$EVENTS_HELP" "$@";   cmd_events "$@" ;;
+	runs)       helped "$RUNS_HELP" "$@";     cmd_runs "$@" ;;
+	panes)      helped "$PANES_HELP" "$@";    cmd_panes "$@" ;;
+	prs)        helped "$PRS_HELP" "$@";      cmd_prs "$@" ;;
+	issues)     helped "$ISSUES_HELP" "$@";   cmd_issues "$@" ;;
+	gate)       helped "$GATE_HELP" "$@";     cmd_gate "$@" ;;
+	close-bead) helped "$CLOSE_HELP" "$@";    cmd_close_bead "$@" ;;
+	kill-pane)  helped "$KILLPANE_HELP" "$@"; cmd_kill_pane "$@" ;;
+	time)       helped "$TIME_HELP" "$@";     cmd_time "$@" ;;
+	trust)      helped "$TRUST_HELP" "$@";    cmd_trust "$@" ;;
+	evidence)   helped "$EVIDENCE_HELP" "$@"; cmd_evidence "$@" ;;
+	doctor)     helped "$DOCTOR_HELP" "$@";   cmd_doctor "$@" ;;
+	down)       helped "$DOWN_HELP" "$@";     cmd_down "$@" ;;
+	list)       helped "$LIST_HELP" "$@";     cmd_list "$@" ;;
+	gc)         helped "$GC_HELP" "$@";       cmd_gc "$@" ;;
+	--help|-h)  printf '%s\n' "$USAGE" ;;
+	*)          printf 'verify-smile: unknown verb %s\n' "$VERB" >&2
+	            printf '%s\n' "$USAGE" >&2; exit 1 ;;
 esac

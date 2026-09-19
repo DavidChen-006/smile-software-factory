@@ -1,7 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Stamp the SMILE templates into a target repo.
 
-    python3 install.py <target-repo> [--force]
+    uv run install.py <target-repo> [--force]
 
 Copies every file under templates/ to the same relative path in the target, preserving file
 modes, and prints one line per file: stamped, unchanged, drifted (differs and not overwritten),
@@ -64,7 +68,7 @@ def main(argv: list[str]) -> int:
     force = "--force" in argv
     args = [a for a in argv if a != "--force"]
     if len(args) != 1:
-        print("usage: python3 install.py <target-repo> [--force]", file=sys.stderr)
+        print("usage: uv run install.py <target-repo> [--force]", file=sys.stderr)
         return 2
     target = Path(args[0]).resolve()
     if not target.is_dir():
