@@ -310,3 +310,21 @@ The skills stamped into a target repo under `templates/.claude/skills/` are the 
 **Prompts.** `prompts/worker.md` and `prompts/reviewer.md` require the agent to end with a line `Principles applied: <name>, <name>, ...` naming each principle it applied by the name the skill gives it, before the reviewer's verdict line (section 9 order). The reviewer skill's rubric names the principles; `none` is a valid value when nothing applied.
 
 **Unit check.** `tests/skills.test.sh`: every `templates/.claude/skills/*/SKILL.md` has the frontmatter above with `name` matching its directory; the forbidden-word grep prints nothing; both prompts contain the literal `Principles applied:`. Runs in under five seconds.
+
+## 14. cmux and Herdr backends (S8)
+
+Two more files under `smile/py/backends/`, `cmux.py` and `herdr.py`, implementing the three verbs of section 7 with the same stdout, exit codes, and error lines. Section 7 stays normative for everything it says; this section adds only what is backend-specific.
+
+**Handles.** `cmux:<workspace>:<pane>` and `herdr:<pane-id>`, each one line with no whitespace, opaque to the caller past the backend prefix. `alive` and `kill` route on the prefix; a `<rest>` the backend cannot parse is malformed, exit 2.
+
+**cmux.** `spawn` places the pane in a cmux workspace named after the main checkout's directory basename (`smile-verify-<runid>` in the fixture), creating the workspace when absent, with `<cwd>` as the working directory and the argv passed unjoined. `kill` names the workspace explicitly (the `--workspace` argument on close; a close without it acts on the focused workspace, the 2026-07-20 finding). `alive` is 0 while the pane exists and its process has not exited, 1 otherwise, using cmux's own listing, never a screen scrape.
+
+**Herdr.** `spawn` opens a pane through the `herdr pane` CLI over the socket API in the workspace Herdr reports as current (`HERDR_WORKSPACE_ID` when set, else the server's current workspace), runs the argv in it with `<cwd>` as the working directory, and prints the pane id Herdr returned. `kill` closes that pane; `alive` asks Herdr's pane listing. Herdr must be running (`HERDR_ENV=1` or a reachable `HERDR_SOCKET_PATH`); when the CLI is on PATH but no server answers, `spawn` is one stderr line and exit 1, like a missing tool.
+
+**Prototype first.** The exact `cmux` and `herdr` argv for each verb are not fixed here; the S8 builder prototypes them on this machine, records every command it settled on with its observed output in the pull request body, and the lead pins them into this section on merge. `~/.claude/skills/herdr/SKILL.md` documents the Herdr CLI; `cmux --help` the cmux one.
+
+**Auto-detect.** Unchanged from section 7: config `backend` names one of the three, else the first of tmux, cmux, herdr on PATH.
+
+**Unit matrix.** `tests/test_mux.py` runs its verb tests once per backend whose tool is on PATH and whose server (Herdr) answers; a backend it cannot run prints one line `skipped <backend> <reason>` and is not a pass. Same handles, same exit codes, same `smile mux alive` semantics across all three; the driver tests keep running on tmux only.
+
+**Evidence.** The section 8 per-bead sequence ending in `campaign.complete`, once per backend, identical across tmux, cmux, and Herdr except for the handle strings; `panes` counts before spawn, after spawn, and after kill; the doctor `mux` line naming the configured backend.
