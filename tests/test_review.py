@@ -24,6 +24,7 @@ from tests.test_core import make_repo, set_config, smile
 from tests.test_driver import FAKE_TMUX, WORKER, bd, bd_json, seed, write_exec
 
 SESSION = f"s4py-{os.getpid()}"
+PR_FIELDS = "number,title,state,headRefOid,headRefName,baseRefName,body,labels"
 TEMPLATE = ("review {{pr_number}} / {{pr_title}} / {{bead_id}} / {{base_branch}} / {{spec_path}}\n"
             "--- issues\n{{issues}}\n--- diff\n{{diff}}\n--- env\n")
 # The reviewer: the prompt is kept for the prompt tests, the environment with it, and the review the
@@ -75,10 +76,11 @@ elif verb == ["issue", "list"]:
 elif verb == ["issue", "create"]:
     n = data["next_issue"]
     data["next_issue"] = n + 1
+    url = "https://github.com/o/r/issues/%d" % n
     data["issues"][str(n)] = {"number": n, "title": flag("--title"), "body": flag("--body"),
-                              "state": "OPEN", "comments": []}
+                              "state": "OPEN", "comments": [], "url": url}
     save()
-    print("https://github.com/o/r/issues/%d" % n)
+    print(url)
 elif verb == ["issue", "close"]:
     issue = data["issues"][argv[2]]
     issue["state"], issue["closedWith"] = "CLOSED", flag("--comment")
@@ -96,6 +98,24 @@ elif verb in (["pr", "comment"], ["label", "create"]):
 else:
     sys.stderr.write("fake gh: unsupported %s\\n" % " ".join(argv))
     sys.exit(2)
+'''
+# A `claude` first on PATH: it records the argv the lane launched it with and approves.
+FAKE_CLAUDE = '#!/bin/sh\ncat >/dev/null\nprintf \'%s\\n\' "$*" > "$CLAUDE_ARGV"\nprintf \'Verdict: APPROVE\\n\'\n'
+SLOW_REVIEWER = "#!/bin/sh\ncat >/dev/null\nsleep 30\nprintf 'Verdict: APPROVE\\n'\n"
+# A reviewer that files an issue while it thinks, so approve must re-read the open findings.
+ISSUE_MAKER = '''#!/usr/bin/env python3
+import json, os, sys
+
+sys.stdin.read()
+path = os.environ["FAKE_GH_DATA"]
+with open(path) as f:
+    data = json.load(f)
+data["issues"]["7"] = {"number": 7, "title": "PR #1: late finding", "state": "OPEN", "comments": [],
+                       "url": "https://github.com/o/r/issues/7",
+                       "body": "- [Critical] late finding\\n\\nPR: #1\\nSHA: %s" % os.environ["SMILE_SHA"]}
+with open(path, "w") as f:
+    json.dump(data, f)
+print("Verdict: APPROVE")
 '''
 APPROVE = "Looks right.\n\nVerdict: APPROVE\n\nPrinciples applied: prove-it-works\n"
 CHANGES = ("Not yet.\n\nVerdict: REQUEST CHANGES\n\n"
@@ -186,6 +206,11 @@ class ReviewCase(unittest.TestCase):
     def set_review(self, text: str) -> None:
         self.review_file.write_text(text)
 
+    def put_config(self, key: str, value: str) -> None:
+        """Append a key the stamped config does not carry, so its default is what it overrides."""
+        cfg = Path(self.repo, "smile.config.yaml")
+        cfg.write_text(f"{cfg.read_text().rstrip(chr(10))}\n{key}: {value}\n")
+
     # ------------------------------------------------------------ driving
     def review(self, *args: str, **env: str) -> subprocess.CompletedProcess:
         return smile(self.repo, "review", *(args or ("1",)), env={**self.env, **env})
@@ -219,6 +244,23 @@ class ReviewCase(unittest.TestCase):
     def reviews(self) -> list:
         d = Path(self.repo, ".factory/reviews")
         return sorted(p.name for p in d.glob("*.md")) if d.is_dir() else []
+
+    def failed_review(self) -> str:
+        return Path(self.repo, f".factory/reviews/1-{self.sha}.failed.md").read_text()
+
+    def lock_file(self) -> Path:
+        return Path(self.repo, ".factory/review/1.lock")
+
+    def issue(self, number: int, line: str, sha: str) -> dict:
+        """One open `review` issue as the lane itself would have written it."""
+        return {"number": number, "title": f"PR #1: {line}", "state": "OPEN", "comments": [],
+                "url": f"https://github.com/o/r/issues/{number}",
+                "body": f"{line}\n\nPR: #1\nSHA: {sha}\nBead: {self.bead}"}
+
+    def put_issues(self, *issues: dict) -> None:
+        data = self.data()
+        data["issues"] = {str(i["number"]): i for i in issues}
+        self.write_data(data)
 
     def status(self, bead: str) -> str:
         return next(b["status"] for b in bd_json(self.repo, "list", "--all") if b["id"] == bead)
@@ -294,10 +336,18 @@ class VerdictTest(ReviewCase):
             self.assertEqual(self.names(), ["review.started"], text)
         self.assertEqual(self.data()["prs"]["1"]["state"], "OPEN")
 
-    def test_a_reviewer_that_exits_non_zero_saves_nothing_and_fails(self) -> None:
+    def test_a_reviewer_that_exits_non_zero_keeps_its_output_under_failed_md(self) -> None:
+        self.set_review("half a thought\n")
         self.assert_one_line_failure(self.review(REVIEW_EXIT="3"))
         self.assertEqual(self.names(), ["review.started"])
-        self.assertEqual(self.reviews(), [])
+        self.assertEqual(self.reviews(), [f"1-{self.sha}.failed.md"], "the reviewer's output was thrown away")
+        self.assertIn("half a thought", self.failed_review())
+
+    def test_a_review_with_no_verdict_keeps_its_output_under_failed_md(self) -> None:
+        self.set_review("I could not read the diff\n")
+        self.assert_one_line_failure(self.review())
+        self.assertEqual(self.reviews(), [f"1-{self.sha}.failed.md"])
+        self.assertIn("I could not read the diff", self.failed_review())
 
     def test_a_verdict_line_after_the_first_one_is_ignored(self) -> None:
         self.set_review("Verdict: APPROVE\n\n- [Critical] stale finding\n\nVerdict: REQUEST CHANGES\n")
@@ -310,8 +360,7 @@ class VerdictTest(ReviewCase):
         self.patch_pr(1, body="no trailer here")
         self.assert_one_line_failure(self.review())
         self.assertEqual(self.names(), [])
-        self.assertEqual(self.gh_calls(), [["pr", "view", "1", "--json",
-                                            "number,title,headRefOid,headRefName,baseRefName,body,labels"]])
+        self.assertEqual(self.gh_calls(), [["pr", "view", "1", "--json", PR_FIELDS]])
 
     def test_bad_arguments_exit_2(self) -> None:
         for args in ((), ("0",), ("x",), ("1", "2"), ("-1",), ("01",)):
@@ -334,6 +383,134 @@ class VerdictTest(ReviewCase):
         self.assertEqual(self.review().returncode, 0)
         self.assertEqual(self.cwd_file.read_text(),
                          os.path.realpath(Path(self.repo, ".factory/review/1")))
+
+
+class LockTest(ReviewCase):
+    """The pull request state check and the per-PR lock: contract section 9, `smile review <n>`."""
+
+    def test_a_pull_request_that_is_not_open_is_refused_before_anything_is_touched(self) -> None:
+        for state in ("MERGED", "CLOSED"):
+            self.clear_events()
+            self.patch_pr(1, state=state)
+            self.assert_one_line_failure(self.review())
+            self.assertEqual(self.names(), [], state)
+            self.assertFalse(self.lock_file().exists(), "a closed pull request took the lock")
+            self.assertEqual(self.reviews(), [])
+
+    def test_a_lock_naming_a_live_pid_refuses_the_second_review(self) -> None:
+        self.lock_file().parent.mkdir(parents=True, exist_ok=True)
+        self.lock_file().write_text(f"{os.getpid()}\n")
+        r = self.review()
+        self.assert_one_line_failure(r)
+        self.assertRegex(r.stderr.decode(), rf"review already running \(pid {os.getpid()}\)\n$")
+        self.assertEqual(self.names(), [])
+        self.assertEqual(self.lock_file().read_text(), f"{os.getpid()}\n", "the live lock was overwritten")
+
+    def test_a_lock_naming_a_dead_pid_is_replaced_and_the_lock_is_gone_after(self) -> None:
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        self.lock_file().parent.mkdir(parents=True, exist_ok=True)
+        self.lock_file().write_text(f"{dead.pid}\n")
+        self.assertEqual(self.review().returncode, 0)
+        self.assertFalse(self.lock_file().exists(), "the lock outlived the review")
+        self.assertIn("review.verdict", self.names())
+
+    def test_a_worktree_a_killed_review_left_registered_is_reclaimed(self) -> None:
+        """kill -9 leaves <factory>/review/<n> registered; without the removal the PR wedges forever."""
+        path = Path(self.repo, ".factory/review/1")
+        git(self.repo, "worktree", "add", "--detach", str(path), "main")
+        self.assertEqual(self.review().returncode, 0, "a stale review worktree wedged the pull request")
+        self.assertFalse(path.exists())
+        self.assertEqual(git(self.repo, "worktree", "list", "--porcelain").count("worktree "), 1)
+
+
+class ReviewerCommandTest(ReviewCase):
+    """What the lane launches, and what a reviewer that never answers costs it."""
+
+    def test_the_default_argv_is_claude_in_plan_mode_on_the_first_model(self) -> None:
+        argv_file = self.scratch / "claude-argv.txt"
+        write_exec(self.bin / "claude", FAKE_CLAUDE)
+        set_config(self.repo, "reviewer.models", "opus, haiku")
+        r = self.review(SMILE_REVIEW_CMD="", CLAUDE_ARGV=str(argv_file))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertEqual(argv_file.read_text().strip(), "-p --model opus --permission-mode plan")
+        self.assertEqual(self.events()[0], ("review.started", self.bead, 1, self.sha, "reviewer", "opus"))
+
+    def test_a_reviewer_that_never_answers_is_killed_at_the_timeout(self) -> None:
+        slow = write_exec(self.bin / "slow-reviewer", SLOW_REVIEWER)
+        self.put_config("reviewer.timeout", "1")
+        r = self.review(SMILE_REVIEW_CMD=slow)
+        self.assert_one_line_failure(r)
+        self.assertEqual(self.names(), ["review.started"])
+        self.assertEqual(self.reviews(), [f"1-{self.sha}.failed.md"])
+        self.assertIn("timed out", self.failed_review())
+        self.assertFalse(self.lock_file().exists())
+
+    def test_a_bad_reviewer_timeout_is_refused_before_anything_is_touched(self) -> None:
+        for value in ("0", "600s", "", "-1"):
+            self.clear_events()
+            self.put_config("reviewer.timeout", value)
+            self.assert_one_line_failure(self.review())
+            self.assertEqual(self.names(), [], value)
+            self.assertFalse(self.lock_file().exists(), value)
+
+
+class IssueTest(ReviewCase):
+    """Issue bookkeeping: a retry at the same head files nothing twice, and approve closes what is open now."""
+
+    def test_a_finding_that_is_already_filed_at_this_head_is_reused(self) -> None:
+        line = "- [Critical] the reap path never returns the worktree"
+        data = self.data()
+        data["issues"] = {"7": self.issue(7, line, self.sha)}
+        data["next_issue"] = 9
+        self.write_data(data)
+        self.set_review(CHANGES)
+        r = self.review()
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertEqual(sorted(self.data()["issues"]), ["7", "9"], "the known finding was filed twice")
+        self.assertEqual([e[5] for e in self.events() if e[0] == "issue.opened"], ["9"])
+        self.assertEqual(self.gh_call("pr", "comment")[4],
+                         "https://github.com/o/r/issues/7\nhttps://github.com/o/r/issues/9")
+
+    def test_a_finding_filed_at_an_older_head_is_filed_again(self) -> None:
+        line = "- [Critical] the reap path never returns the worktree"
+        data = self.data()
+        data["issues"] = {"7": self.issue(7, line, "a" * 40)}
+        data["next_issue"] = 9
+        self.write_data(data)
+        self.set_review(CHANGES)
+        self.assertEqual(self.review().returncode, 0)
+        self.assertEqual([e[5] for e in self.events() if e[0] == "issue.opened"], ["9", "10"])
+
+    def test_approve_closes_an_issue_opened_while_the_reviewer_was_thinking(self) -> None:
+        maker = write_exec(self.bin / "issue-maker", ISSUE_MAKER)
+        r = self.review(SMILE_REVIEW_CMD=maker)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertEqual([e[5] for e in self.events() if e[0] == "issue.resolved"], ["7"],
+                         "approve closed the issues read before the reviewer ran, not the open ones")
+        self.assertEqual(self.data()["issues"]["7"]["state"], "CLOSED")
+
+
+class DiffTest(ReviewCase):
+    def test_the_diff_is_taken_against_the_fetched_base_not_a_stale_local_one(self) -> None:
+        """A local base behind origin pads a three-dot diff with work the pull request never did."""
+        git(self.repo, "checkout", "-q", "--detach", "main")
+        Path(self.repo, "unrelated.txt").write_text("someone else's merge\n")
+        git(self.repo, "add", "unrelated.txt")
+        git(self.repo, "commit", "-qm", "chore: unrelated")
+        git(self.repo, "push", "-q", "origin", "HEAD:main")
+        git(self.repo, "checkout", "-q", "-B", self.branch, "HEAD")
+        Path(self.repo, f"{self.bead}.txt").write_text("worker output\n")
+        git(self.repo, "add", f"{self.bead}.txt")
+        git(self.repo, "commit", "-qm", "feat: alpha")
+        git(self.repo, "push", "-qf", "origin", self.branch)
+        self.sha = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "checkout", "-q", "main")  # left one commit behind origin/main on purpose
+        self.patch_pr(1, headRefOid=self.sha)
+        self.assertEqual(self.review().returncode, 0, self.prompt_file)
+        body = self.prompt_file.read_text().split("--- diff\n", 1)[1]
+        self.assertIn(f"+++ b/{self.bead}.txt", body)
+        self.assertNotIn("unrelated.txt", body, "the diff carried work the pull request never did")
 
 
 class PromptTest(ReviewCase):
@@ -529,6 +706,57 @@ class TickTest(ReviewCase):
         self.assertEqual(self.status(self.bead), "closed")
         self.assertEqual(self.tick().returncode, 0)
         self.assertEqual(self.names().count("bead.closed"), 1, "the bead was closed twice")
+
+    def test_a_merged_pull_request_with_no_label_closes_its_bead(self) -> None:
+        """`smile:approved` is not required: GitHub is the record of what landed, `smile audit` reports it."""
+        self.patch_pr(1, state="MERGED", mergedAt="2026-09-18T00:00:00Z",
+                      mergeCommit={"oid": "f" * 40}, labels=[])
+        r = self.tick()
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertEqual(self.events()[1:3], [
+            ("pr.merged", self.bead, 1, "f" * 40, "human", None),
+            ("bead.closed", self.bead, 1, None, "driver", None)])
+        self.assertEqual(self.status(self.bead), "closed")
+        self.assertEqual(self.audit().stdout, f"#1 {self.sha} {self.bead}\n".encode())
+
+    def test_a_pull_request_merged_by_hand_before_any_tick_is_never_a_crash(self) -> None:
+        self.write_data({"prs": {}, "issues": {}, "next_issue": 7, "merge_oid": "0" * 40})
+        self.assertEqual(self.tick().returncode, 0)
+        state = self.runs()[f"{self.bead}.json"]
+        self.kill_window(state["handle"])
+        self.write_data({"prs": {"1": self.pr(1, state="MERGED", mergedAt="2026-09-18T00:00:00Z",
+                                              mergeCommit={"oid": "f" * 40})},
+                         "issues": {}, "next_issue": 7, "merge_oid": "0" * 40})
+        r = self.tick()
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertNotIn("worker.crashed", self.names(), "a hand-merged pull request was read as a crash")
+        self.assertEqual(sorted(self.runs("waiting")), [f"{self.bead}.json"])
+        self.assertIn("bead.closed", self.names())
+
+    def test_three_reviews_with_no_verdict_escalate_once_and_stop_reviewing(self) -> None:
+        for _ in range(3):
+            smile(self.repo, "event", "review.started", f"bead={self.bead}", "pr=1", f"sha={self.sha}",
+                  "actor=reviewer", "detail=custom", env=self.env)
+        self.set_review("no verdict here\n")
+        r = self.tick()
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        self.assertEqual(self.names().count("review.started"), 3, "a capped head was reviewed again")
+        escalations = [e for e in self.events() if e[0] == "watch.escalation"]
+        self.assertEqual(escalations, [
+            ("watch.escalation", self.bead, 1, self.sha, "driver", "review failed 3 times")])
+        self.assertEqual(self.tick().returncode, 0)
+        self.assertEqual(self.names().count("watch.escalation"), 1, "the escalation was logged twice")
+
+    def test_two_failed_reviews_are_still_under_the_cap(self) -> None:
+        for _ in range(2):
+            smile(self.repo, "event", "review.started", f"bead={self.bead}", "pr=1", f"sha={self.sha}",
+                  "actor=reviewer", "detail=custom", env=self.env)
+        self.assertEqual(self.tick().returncode, 0)
+        self.assertEqual(self.names().count("review.started"), 3)
+        self.assertNotIn("watch.escalation", self.names())
+
+    def audit(self) -> subprocess.CompletedProcess:
+        return smile(self.repo, "audit", env=self.env)
 
     def test_a_merged_approved_pull_request_that_is_not_merged_yet_is_left_alone(self) -> None:
         self.patch_pr(1, state="CLOSED", labels=[{"name": "smile:approved"}])

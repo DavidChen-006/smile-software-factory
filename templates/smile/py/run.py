@@ -29,6 +29,24 @@ from worktree import stderr, tool
 OPEN = ("open", "in_progress", "blocked")  # a campaign is complete when no bead is in one of these
 STATE_KEYS = ("bead", "worktree", "handle", "order", "attempts", "spawned_at")
 COUNT = re.compile(r"[1-9][0-9]*")  # ASCII only: str.isdigit() would take ٣ and ⁷
+CAP = 3  # reviews of one head that named no verdict before the driver stops trying (contract section 9)
+
+
+def unanswered(log: list, pr: int, sha: str) -> int:
+    """How many reviews of this head no verdict ever answered: the cap counts attempts, not reviews.
+
+    A verdict at the pair clears the count, so a head that was judged and then re-reviewed at the
+    same sha starts its tally again rather than inheriting the old one.
+    """
+    count = 0
+    for record in log:
+        if record.get("pr") != pr or record.get("sha") != sha:
+            continue
+        if record.get("event") == "review.started":
+            count += 1
+        elif record.get("event") == "review.verdict":
+            count = 0
+    return count
 
 
 def now() -> str:
@@ -80,6 +98,7 @@ class Driver:
         self.runs = f"{self.factory}/runs"
         self.parallel = int(config.get(root, "max_parallel"))
         self.prs: list | None = None
+        self.every_pr: list | None = None
         self.base_branch = config.get(root, "base_branch")
 
     # ------------------------------------------------------------ seams
@@ -100,6 +119,12 @@ class Driver:
         if self.prs is None:
             self.prs = github.factory_prs(self.repo, "open")
         return self.prs
+
+    def all_prs(self) -> list:
+        """Every factory pull request in any state, read once per tick: reap asks whether one exists at all."""
+        if self.every_pr is None:
+            self.every_pr = github.factory_prs(self.repo, "all", "number,body")
+        return self.every_pr
 
     def state_files(self, where: str = "") -> list:
         return sorted(glob.glob(f"{self.runs}/{where}/*.json" if where else f"{self.runs}/*.json"))
@@ -130,7 +155,7 @@ class Driver:
     # ------------------------------------------------------------ tick
     def tick(self) -> bool:
         """One tick in contract order. True when the campaign is complete."""
-        self.prs = None  # the tick's view of GitHub, read at most once, by whoever asks first
+        self.prs = self.every_pr = None  # the tick's view of GitHub, read at most once each
         self.reap()
         self.review_pending()
         if not os.path.exists(f"{self.factory}/pause"):  # pause already logged driver.paused; log nothing here
@@ -161,9 +186,10 @@ class Driver:
 
         A worker opens its pull request and exits seconds later, so on the tick that finds the pane
         dead the log has not named it yet; asking GitHub here is what keeps a finished round from
-        being read as a crash.
+        being read as a crash. Every state is asked for, not only open: a pull request a human
+        merged before the first tick is a finished round too, never a crash.
         """
-        return any(pr["bead"] == bead for pr in self.open_prs())
+        return any(pr["bead"] == bead for pr in self.all_prs())
 
     def reaped(self, path: str, state: dict) -> None:
         """A dead pane whose bead is closed: kill the window, return the worktree, file the run under done/."""
@@ -191,28 +217,39 @@ class Driver:
         log = events.read(self.root)
         opened = {r.get("pr") for r in log if r.get("event") == "pr.opened"}
         judged = {(r.get("pr"), r.get("sha")) for r in log if r.get("event") == "review.verdict"}
+        escalated = {(r.get("pr"), r.get("sha")) for r in log if r.get("event") == "watch.escalation"}
         for pr in self.open_prs():
+            pair = (pr["number"], pr["headRefOid"])
             if pr["number"] not in opened:
                 events.append(self.root, "pr.opened", bead=pr["bead"], pr=pr["number"],
                               sha=pr["headRefOid"], actor="driver")
-            if (pr["number"], pr["headRefOid"]) not in judged:
-                proc = self.smile("review", str(pr["number"]))
-                if proc.returncode != 0:
-                    print(f"smile: review {pr['number']} failed: {stderr(proc)}", file=sys.stderr)
-        self.close_merged(log)
+            if pair in judged:
+                continue
+            if unanswered(log, *pair) >= CAP:  # a head three reviews could not judge is a human's problem
+                if pair not in escalated:
+                    events.append(self.root, "watch.escalation", bead=pr["bead"], pr=pr["number"],
+                                  sha=pr["headRefOid"], actor="driver", detail="review failed 3 times")
+                continue
+            proc = self.smile("review", str(pr["number"]))
+            if proc.returncode != 0:
+                print(f"smile: review {pr['number']} failed: {stderr(proc)}", file=sys.stderr)
+        self.close_merged(events.read(self.root))  # re-read: the reviews above merged and closed beads
 
     def close_merged(self, log: list) -> None:
-        """A gated pull request a human merged: close its bead now that GitHub says it landed."""
+        """A merged pull request whose bead is still open: close it now that GitHub says it landed.
+
+        Whether the lane merged it or a human did, and whether or not it carries `smile:approved`,
+        GitHub is the record of what landed; `smile audit` is what reports a merge no verdict approved.
+        """
         closed = {r.get("bead") for r in log if r.get("event") == "bead.closed"}
-        for pr in github.factory_prs(self.repo, "closed"):
-            if "smile:approved" not in pr["labels"] or pr["bead"] in closed:
+        announced = {r.get("pr") for r in log if r.get("event") == "pr.merged"}
+        for pr in github.factory_prs(self.repo, "merged", "number,body,mergeCommit"):
+            if pr["bead"] in closed:
                 continue
-            view = github.json_out(self.repo, ["pr", "view", str(pr["number"]), "--json", "mergedAt,mergeCommit"])
-            if not isinstance(view, dict) or not view.get("mergedAt"):
-                continue  # closed unmerged: the bead stays claimed, which is the escalation path
             tool(self.repo, ["bd", "close", pr["bead"]])
-            events.append(self.root, "pr.merged", bead=pr["bead"], pr=pr["number"],
-                          sha=(view.get("mergeCommit") or {}).get("oid"), actor="human")
+            if pr["number"] not in announced:  # the lane logs its own merges; this is the human's path
+                events.append(self.root, "pr.merged", bead=pr["bead"], pr=pr["number"],
+                              sha=(pr.get("mergeCommit") or {}).get("oid"), actor="human")
             events.append(self.root, "bead.closed", bead=pr["bead"], pr=pr["number"], actor="driver")
 
     def claim(self) -> None:
