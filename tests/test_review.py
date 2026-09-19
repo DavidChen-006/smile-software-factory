@@ -134,6 +134,7 @@ class ReviewCase(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = make_repo("smile-rev", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
+        set_config(self.repo, "watchtower", "off")  # S5's pane is test_watchtower's subject, not this suite's
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "stamp")
         git(self.repo, "branch", "-M", "main")

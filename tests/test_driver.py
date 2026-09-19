@@ -146,6 +146,7 @@ class DriverCase(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = make_repo("smile-drv", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
+        set_config(self.repo, "watchtower", "off")  # S5's pane is test_watchtower's subject, not this suite's
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "stamp"], check=True, stdout=subprocess.DEVNULL)
         seed(self.repo, *self.beads)
