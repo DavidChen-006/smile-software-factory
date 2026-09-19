@@ -53,8 +53,10 @@ Keys, defaults, and meaning. This table is the schema; a key not in it is unknow
 | `worker.model` | `opus` | Claude model the driver launches each worker with. |
 | `worker.permission_mode` | `acceptEdits` | Permission mode the worker runs under. |
 | `reviewer.models` | `opus` | Comma-separated list; one review runs per model. |
+| `reviewer.timeout` | `600` | Seconds the reviewer gets before the runtime kills it (S4). |
 | `max_parallel` | `3` | Most beads in flight at once. |
 | `watchtower` | `on` | Spawn the watchtower pane at campaign start: `on` or `off`. |
+| `watchtower.model` | `opus` | Claude model the watchtower pane runs with (S5). |
 | `merge` | `auto` | `auto` squash-merges approved PRs; `human` labels them `smile:approved`. |
 | `base_branch` | `main` | Branch worker PRs target and worktrees branch from. |
 
