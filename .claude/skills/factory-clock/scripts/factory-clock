@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""factory-clock: where did each subagent's wall time go?
+
+Usage: factory-clock [session-id] [--tsv] [--min SECONDS]
+
+Reads a Claude Code session's main transcript (for agent names) and every subagent
+transcript, pairs tool_use with tool_result, and buckets the time. Deterministic; no hooks.
+"""
+
+import glob
+import json
+import os
+import re
+import sys
+from datetime import datetime
+
+PROJECTS = os.path.expanduser("~/.claude/projects")
+TMP = glob.glob("/private/tmp/claude-*") + glob.glob("/tmp/claude-*")
+
+LIVE = re.compile(
+    r"verify-smile\.test\.sh|tests/all\.sh|verify-smile (up|tick|time|down|stamp|seed|review)"
+    r"|smile (run|tick|review)|/bin/sleep|\bsleep \d|live-check|--real|until \["
+)
+UNIT = re.compile(r"unittest|\.test\.sh|ruff|check-plan|pytest")
+GIT = re.compile(r"\bgit\b|\bgh\b|gh-axi|commit\.sh|push\.sh|branch\.sh")
+READ = re.compile(r"^\s*(cat|sed -n|head|tail|ls|find|grep|rg|wc|tree|which|command -v|python3 -c|diff)\b")
+CATS = [
+    "model",
+    "live suite/fixture",
+    "unit tests/lint",
+    "git/gh",
+    "read/search",
+    "write/edit",
+    "other bash",
+    "other tool",
+    "killed mid-call",
+]
+
+
+def ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def load(path):
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("timestamp") and isinstance(r.get("message"), dict):
+                rows.append(r)
+    return rows
+
+
+def find_session(arg):
+    if arg:
+        hits = glob.glob(f"{PROJECTS}/*/{arg}.jsonl")
+        if not hits:
+            sys.exit(f"factory-clock: no session {arg} under {PROJECTS}")
+        return hits[0]
+    cands = [p for p in glob.glob(f"{PROJECTS}/*/*.jsonl") if os.path.isdir(p[:-6] + "/subagents") or transcripts_dir(p)]
+    if not cands:
+        sys.exit("factory-clock: no session with subagents found")
+    return max(cands, key=os.path.getmtime)
+
+
+def transcripts_dir(main):
+    proj = os.path.basename(os.path.dirname(main))
+    sid = os.path.basename(main)[:-6]
+    for t in TMP:
+        d = f"{t}/{proj}/{sid}/tasks"
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def agent_names(rows):
+    names, pending = {}, {}
+    for r in rows:
+        c = r["message"].get("content")
+        if not isinstance(c, list):
+            continue
+        for b in c:
+            if b.get("type") == "tool_use" and b.get("name") == "Agent":
+                inp = b.get("input", {})
+                pending[b["id"]] = inp.get("name") or inp.get("description", "?")
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in pending:
+                m = re.search(r"agent_?[Ii]d: ([0-9a-f]{17})", str(b.get("content")))
+                if m:
+                    names[m.group(1)] = pending[b["tool_use_id"]]
+    return names
+
+
+def classify(name, inp):
+    if name in ("Read", "Grep", "Glob"):
+        return "read/search"
+    if name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return "write/edit"
+    if name != "Bash":
+        return "other tool"
+    cmd = inp.get("command", "")
+    if LIVE.search(cmd):
+        return "live suite/fixture"
+    if UNIT.search(cmd):
+        return "unit tests/lint"
+    if GIT.search(cmd):
+        return "git/gh"
+    if READ.search(cmd):
+        return "read/search"
+    return "other bash"
+
+
+def analyse(path, label):
+    rows = load(path)
+    if not rows:
+        return None
+    start, end = ts(rows[0]["timestamp"]), ts(rows[-1]["timestamp"])
+    buckets = {k: 0.0 for k in CATS}
+    longest, open_calls = [], {}
+    last = start
+    calls = 0
+    for r in rows:
+        t = ts(r["timestamp"])
+        c = r["message"].get("content")
+        if not isinstance(c, list):
+            if r["type"] == "user":
+                last = t
+            continue
+        for b in c:
+            if b.get("type") == "tool_use":
+                calls += 1
+                open_calls[b["id"]] = (t, classify(b.get("name"), b.get("input", {})), b.get("name"), json.dumps(b.get("input", {}))[:90])
+                buckets["model"] += (t - last).total_seconds()
+                last = t
+            elif b.get("type") == "tool_result" and b.get("tool_use_id") in open_calls:
+                t0, cat, name, desc = open_calls.pop(b["tool_use_id"])
+                d = (t - t0).total_seconds()
+                text = str(b.get("content"))
+                if "interrupted" in text or "doesn't want to proceed" in text:
+                    cat = "killed mid-call"
+                buckets[cat] += d
+                longest.append((d, cat, name, desc))
+                last = t
+    return {
+        "name": label,
+        "start": start,
+        "wall": (end - start).total_seconds(),
+        "buckets": buckets,
+        "longest": sorted(longest, reverse=True)[:3],
+        "calls": calls,
+    }
+
+
+def fmt(s):
+    return f"{int(s // 60)}m{int(s % 60):02d}s"
+
+
+def main(argv):
+    tsv = "--tsv" in argv
+    min_s = 120
+    if "--min" in argv:
+        min_s = int(argv[argv.index("--min") + 1])
+    positional = [a for i, a in enumerate(argv) if not a.startswith("--") and (i == 0 or argv[i - 1] != "--min")]
+    main_path = find_session(positional[0] if positional else None)
+    names = agent_names(load(main_path))
+    files = []
+    tdir = transcripts_dir(main_path)
+    if tdir:
+        files += glob.glob(f"{tdir}/a*.output")
+    files += glob.glob(main_path[:-6] + "/subagents/agent-*.jsonl")
+    seen, results = set(), []
+    for p in files:
+        m = re.search(r"(a[0-9a-f]{16})", os.path.basename(p))
+        aid = m.group(1) if m else os.path.basename(p)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        label = names.get(aid) or re.sub(r"^agent-a?|-[0-9a-f]{8,}.*$|\.jsonl$", "", os.path.basename(p))
+        a = analyse(p, label)
+        if a and a["wall"] >= min_s:
+            results.append(a)
+    results.sort(key=lambda a: a["start"])
+    if tsv:
+        print("agent\tstart\twall_s\t" + "\t".join(CATS) + "\tcalls")
+        for a in results:
+            print(f"{a['name']}\t{a['start'].isoformat()}\t{a['wall']:.0f}\t" + "\t".join(f"{a['buckets'][k]:.0f}" for k in CATS) + f"\t{a['calls']}")
+        return
+    print(f"session {os.path.basename(main_path)[:-6]}  agents {len(results)}  (rows under {min_s}s hidden)\n")
+    print("| agent | started (UTC) | wall | " + " | ".join(CATS) + " | calls |")
+    print("|" + "---|" * (len(CATS) + 4))
+    tot = {k: 0.0 for k in CATS}
+    for a in results:
+        for k in CATS:
+            tot[k] += a["buckets"][k]
+        cells = [fmt(a["buckets"][k]) if a["buckets"][k] >= 30 else "-" for k in CATS]
+        print(f"| {a['name'][:34]} | {a['start']:%m-%d %H:%M} | {fmt(a['wall'])} | " + " | ".join(cells) + f" | {a['calls']} |")
+    print(f"| total | | {fmt(sum(a['wall'] for a in results))} | " + " | ".join(fmt(tot[k]) for k in CATS) + " | |")
+    print("\nLongest tool calls per agent")
+    for a in results:
+        print(f"\n{a['name']} ({fmt(a['wall'])} wall)")
+        for d, cat, name, desc in a["longest"]:
+            print(f"  {fmt(d)}  [{cat}]  {name}: {desc}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
