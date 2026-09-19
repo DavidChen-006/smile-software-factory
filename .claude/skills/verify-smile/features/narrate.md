@@ -32,6 +32,11 @@ cursor at `.factory/narrate.cursor`. It reads the log and the cursor and appends
 
 Preconditions: a fixture with `install: stamped` and at least one seeded bead.
 
+`verify-smile narrate` runs one `smile narrate` and prints **one JSON object**, never the raw
+stdout: `runid`, `exit`, `lines` (the verb's stdout lines, one string per narrated event, `[]` when
+nothing is new), and `cursor` (the content of `.factory/narrate.cursor` after the call, `""` when
+the file is absent). Read `lines` and `cursor`; there is no per-line JSON listing to parse.
+
 - **Baseline.** `verify-smile narrate` once before any tick: whatever the stamp and seed left in the
   log is consumed, and the cursor is set. Everything after this is the loop's own narration.
 - **Across a loop.** `verify-smile tick`, then `verify-smile narrate`; tick again, narrate again;

@@ -49,6 +49,7 @@ Preconditions:
 ## Gotchas
 
 - The real reviewer takes minutes and spends tokens. Run it on one bead, never for every bead in a fixture.
+- Never `down` a real-worker or real-reviewer dogfood before the pull requests have been read. `down` deletes the fixture repo on GitHub (`"disposal": "deleted"`), and the diffs, the review comments, and the finding issues go with it. The evidence directory keeps `.factory/reviews/` and `prs.json`, not the PR pages. Read the PRs first, then tear down.
 - A verdict at an older head SHA is not a verdict: the lane keys on `(pr, sha)`, so a fix push is always reviewed again. `tests/test_review.py` proves the filter.
 - The stub reviewer's counter lives under `.factory/stub/`, keyed by PR number, so `--reviewer-changes-once` requests changes once per PR, not once per fixture. A second fixture starts clean.
 - Pass `--reviewer-changes-once` on every tick of the round. It shapes the stub for that tick only; dropping it mid-round makes the first review of a later PR an approve.
