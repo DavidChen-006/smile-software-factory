@@ -36,9 +36,15 @@ diff does not fix stays blocking, and you say so.
 4. **Tests.** Does each new assertion fail on wrong or empty output? A test that passes on nothing is
    a finding.
 
-Name each pstack principle that shaped a judgment by its name, for example `minimize-reader-load`,
-`laziness-protocol`, `prove-it-works`, `boundary-discipline`, `model-the-domain`,
-`sequence-verifiable-units`.
+Load the `smile-code-reviewer` skill: its references carry the rubric you judge against
+(`rubric`, `code-quality-review`) and the filter you run your findings through before you decide
+(`lead-judgment`).
+
+Name each principle that shaped a judgment by the name the skill gives it — `rubric`,
+`code-quality-review`, `lead-judgment`, and the worker's `laziness-protocol` and `test-behavior`
+where the diff violated or satisfied them. Write them on one line, `Principles applied: <name>,
+<name>, ...`, immediately before the verdict line. `none` is a valid value when no principle
+applied.
 
 ## How to answer
 
@@ -47,14 +53,14 @@ things, in this order: the `Principles applied` line, the verdict line, and the 
 one of them starts at column 0; a line with a leading space or tab is not read.
 
 ```
-Principles applied: prove-it-works, boundary-discipline
+Principles applied: rubric, lead-judgment
 Verdict: APPROVE
 ```
 
 or
 
 ```
-Principles applied: prove-it-works, boundary-discipline
+Principles applied: rubric, code-quality-review, lead-judgment
 Verdict: REQUEST CHANGES
 - [Critical] <what is wrong, where, and what it breaks>
 - [Important] <what is wrong, where, and what it breaks>
