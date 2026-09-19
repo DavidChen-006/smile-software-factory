@@ -4,11 +4,15 @@ Run from the repo root: uv run python -m unittest tests.test_core -v
 """
 
 import atexit
+import io
 import json
 import os
 import re
+import runpy
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,6 +78,52 @@ def smile(repo: str, *args: str, env: dict | None = None) -> subprocess.Complete
     """Run one command through the stamped shim from an unrelated cwd; bytes in and out. SMILE_ACTOR only via env."""
     full = {k: v for k, v in os.environ.items() if k != "SMILE_ACTOR"} | (env or {})
     return subprocess.run([f"{repo}/smile/smile", *args], cwd="/", env=full, capture_output=True, check=False)
+
+
+RUNTIME_MODULES = ("smile", "audit", "config", "events", "gate", "github", "mux", "review", "run", "worktree")
+
+
+def smile_inproc(repo: str, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Same call as smile(), run in this interpreter instead of through the shim and `uv run`.
+
+    Saves the ~0.2s interpreter start per call. The runtime is written as one process per command, so
+    each call gets a fresh import of every runtime module (they cache per-repo state at import time),
+    the cwd, environment, argv, streams and the SIGTERM handler run.py installs are restored after.
+    Behaviour is identical because the shim only resolves the root and execs this same main().
+    """
+    py = os.path.join(repo, "smile", "py")
+    full = {k: v for k, v in os.environ.items() if k != "SMILE_ACTOR"} | (env or {}) | {"SMILE_ROOT": repo}
+    old_env, old_cwd, old_path = dict(os.environ), os.getcwd(), list(sys.path)
+    old_out, old_err, old_argv = sys.stdout, sys.stderr, sys.argv
+    old_term = signal.getsignal(signal.SIGTERM)
+    out, err = io.TextIOWrapper(io.BytesIO(), encoding="utf-8"), io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    cached = {name: sys.modules.pop(name) for name in RUNTIME_MODULES if name in sys.modules}
+    try:
+        os.environ.clear()
+        os.environ.update(full)
+        os.chdir("/")
+        sys.path.insert(0, py)
+        sys.stdout, sys.stderr, sys.argv = out, err, [os.path.join(py, "smile.py"), *args]
+        code = 0
+        try:
+            runpy.run_path(os.path.join(py, "smile.py"), run_name="__main__")  # ends in sys.exit(main(argv))
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    finally:
+        out.flush()
+        err.flush()
+        sys.stdout, sys.stderr, sys.argv = old_out, old_err, old_argv
+        sys.path[:] = old_path
+        os.chdir(old_cwd)
+        os.environ.clear()
+        os.environ.update(old_env)
+        signal.signal(signal.SIGTERM, old_term)
+        for name in RUNTIME_MODULES:
+            sys.modules.pop(name, None)
+        sys.modules.update(cached)
+    return subprocess.CompletedProcess(
+        args=[f"{repo}/smile/smile", *args], returncode=code,
+        stdout=out.buffer.getvalue(), stderr=err.buffer.getvalue())
 
 
 def log_lines(repo: str) -> list[bytes]:
