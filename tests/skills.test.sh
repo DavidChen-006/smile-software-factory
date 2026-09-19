@@ -28,8 +28,10 @@ for skill in "$SKILLS"/*/SKILL.md; do
 done
 [ "$found" -ge 7 ] || fail "expected at least 7 stamped skills, found $found"
 
-# 2. no skill mentions a tool, a service, or a home-directory path from the authoring machine
-hits=$(grep -rli "cursor\|discord\|Downloads\|openclaw\|/Users/" "$SKILLS")
+# 2. no skill and neither user-facing document mentions a tool, a service, or a home-directory path
+# from the authoring machine (section 15 extends this grep to README.md and docs/HOW-IT-WORKS.md)
+hits=$(grep -rli "cursor\|discord\|Downloads\|openclaw\|/Users/" \
+	"$SKILLS" "$ROOT/README.md" "$ROOT/docs/HOW-IT-WORKS.md")
 [ -z "$hits" ] || fail "forbidden words in: $(printf '%s' "$hits" | tr '\n' ' ')"
 
 # 3. both prompts require the principles line
