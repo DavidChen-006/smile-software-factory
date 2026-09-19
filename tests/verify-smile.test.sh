@@ -61,8 +61,8 @@ printf '%s\n' "$FEAT_OUT" | tail -1
 check "feature install exits 0" test "$FEAT_RC" -eq 0
 check "feature install printed PASS" grep -q '^PASS install' <<<"$FEAT_OUT"
 check "install.log recorded" test -f "$EVIDENCE_ROOT/$RUNID/install.log"
-# a feature that has not landed yet: `loop` landed in S3 and would really drive this fixture
-"$VS" feature review --run "$RUNID" >/dev/null 2>&1; RC=$?
+# a feature that has not landed yet: loop, review, and gate all landed and would really drive this fixture
+"$VS" feature watchtower --run "$RUNID" >/dev/null 2>&1; RC=$?
 check "unimplemented feature exits 2" test "$RC" -eq 2
 "$VS" feature install --nosuch --run "$RUNID" >/dev/null 2>&1; RC=$?
 check "unknown flag rejected" test "$RC" -ne 0

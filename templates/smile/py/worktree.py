@@ -13,8 +13,23 @@ import re
 import subprocess
 
 TOOL_ENV = {**os.environ, "BD_NON_INTERACTIVE": "1"}  # bd must never open a prompt under a driver
-PLACEHOLDERS = ("bead_id", "bead_title", "bead_description", "spec_path", "base_branch")
-FIELD = re.compile(r"\{\{(" + "|".join(PLACEHOLDERS) + r")\}\}")
+FIELD = re.compile(r"\{\{([a-z_]+)\}\}")
+
+
+def stderr(proc: subprocess.CompletedProcess) -> str:
+    return next(iter(proc.stderr.decode(errors="replace").splitlines()), "no output")
+
+
+def tool(cwd: str, argv: list) -> str:
+    """Run a tool and return its stdout; a non-zero exit is one line and exit 1 through main.
+
+    Every shell-out in the runtime lands here, so one place decides the environment and what a
+    failure reads like.
+    """
+    proc = subprocess.run(argv, cwd=cwd, env=TOOL_ENV, capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(argv[:2])} failed: {stderr(proc)}")
+    return proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def repo(root: str) -> str:
@@ -40,6 +55,10 @@ def spec_path(root: str) -> str:
     return os.path.relpath(newest, root) if newest else ""
 
 
-def order(template: str, values: dict) -> str:
-    """The work order: one pass, so a value that itself looks like a placeholder is left alone."""
-    return FIELD.sub(lambda m: values[m.group(1)], template)
+def render(template: str, values: dict) -> str:
+    """A prompt with its placeholders filled: one pass, so a value that looks like one is left alone.
+
+    A `{{name}}` the caller has no value for stays as it is: the work order and the review prompt
+    substitute different sets, and neither should eat the other's placeholders.
+    """
+    return FIELD.sub(lambda m: values.get(m.group(1), m.group(0)), template)

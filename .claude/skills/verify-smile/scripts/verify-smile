@@ -191,7 +191,9 @@ cmd_feature() {
 			doctor) feature_doctor "$runid" "$fixture" ;;
 			mux) feature_mux "$runid" "$fixture" "$backend" ;;
 			loop) feature_loop "$runid" "$fixture" ;;
-			review|gate|watchtower|narrate)
+			review) feature_review "$runid" "$fixture" "$real_review" ;;
+			gate) feature_gate "$runid" "$fixture" ;;
+			watchtower|narrate)
 				printf 'NOT IMPLEMENTED %s (lands in a later spike)\n' "$name"
 				exit 2 ;;
 			*) die "unknown feature '$name'; see features/README.md" ;;
@@ -297,6 +299,110 @@ feature_mux() {
 	printf 'PASS mux\n'
 }
 
+# ---------------------------------------------------------------- the run's scratch world
+# world_up <runid> <fixture>: build the scratch HOME, the git config, and the stub wrappers that
+# every driven feature runs in, and set the WORLD_* variables `drive` reads. One place decides what
+# "the same world" is, because the driver, its worker panes, and its `smile review` subprocess must
+# all be in it.
+#
+# HOME points at the run's evidence directory: the driver writes the trust flag into ~/.claude.json
+# and treehouse pools its worktrees under $HOME. gh and git keep the real config through
+# GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, plus GIT_CONFIG_NOSYSTEM=1, because the Xcode command-line
+# tools put `credential.helper = osxkeychain` in the SYSTEM config, and a scratch home has no login
+# keychain. GH_TOKEN answers the gh credential helper; it is read here, while HOME is still the real
+# one, and never written to disk.
+world_up() {
+	local runid="$1" fixture="$2" git_name git_email
+	WORLD_SMILE="$fixture/smile/smile"
+	WORLD_SESSION=$(mf "$runid" tmux_session)
+	tmux has-session -t "=$WORLD_SESSION" 2>/dev/null \
+		|| { printf 'FAIL: tmux session %s missing\n' "$WORLD_SESSION"; return 1; }
+	WORLD_HOME="$EVIDENCE_ROOT/$runid/home"
+	WORLD_GH_CFG="${GH_CONFIG_DIR:-$HOME/.config/gh}"
+	WORLD_GIT_CFG="$WORLD_HOME/gitconfig"
+	WORLD_TOKEN=$(gh auth token 2>/dev/null) || { printf 'FAIL: gh has no token for this account\n'; return 1; }
+	git_name=$(git config --global --get user.name 2>/dev/null || true)
+	git_email=$(git config --global --get user.email 2>/dev/null || true)
+	mkdir -p "$WORLD_HOME"
+	printf '[credential]\n\thelper = !gh auth git-credential\n[user]\n\tname = %s\n\temail = %s\n' \
+		"$git_name" "$git_email" > "$WORLD_GIT_CFG"
+	world_wrapper "$WORLD_HOME/worker-env" "$SCRIPT_DIR/stub-worker"
+	world_wrapper "$WORLD_HOME/reviewer-env" "$SCRIPT_DIR/stub-reviewer"
+	WORLD_WORKER="$WORLD_HOME/worker-env"
+	WORLD_REVIEW_CMD="$WORLD_HOME/reviewer-env"
+	WORLD_CHANGES_ONCE="${WORLD_CHANGES_ONCE:-0}"
+	WORLD_LOG="$fixture/.factory/events.jsonl"
+}
+
+# world_wrapper <path> <target>: a wrapper that re-enters the scratch world and execs the stub. A
+# pane inherits the multiplexer session's environment, not the driver's, and `smile review` hands
+# the reviewer its own environment, so both stubs are entered through one of these.
+world_wrapper() {
+	cat > "$1" <<WRAPEOF
+#!/bin/sh
+export HOME="$WORLD_HOME" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1
+export GH_CONFIG_DIR="$WORLD_GH_CFG" GH_TOKEN="$WORLD_TOKEN"
+exec "$2" "\$@"
+WRAPEOF
+	chmod +x "$1"
+}
+
+# drive <args...>: the fixture's own smile, in that world. WORLD_REVIEW_CMD empty means the real
+# headless reviewer, which is what --real-review asks for.
+drive() {
+	env HOME="$WORLD_HOME" GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" \
+		GH_TOKEN="$WORLD_TOKEN" GIT_CONFIG_NOSYSTEM=1 SMILE_MUX_SESSION="$WORLD_SESSION" \
+		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="$WORLD_REVIEW_CMD" \
+		SMILE_STUB_CHANGES_ONCE="$WORLD_CHANGES_ONCE" \
+		"$WORLD_SMILE" "$@"
+}
+
+# world_events <bead> <event>: how many such events the log holds for that bead
+world_events() {
+	python3 -c '
+import json, sys
+print(sum(1 for o in map(json.loads, open(sys.argv[1])) if o["bead"] == sys.argv[2] and o["event"] == sys.argv[3]))' \
+		"$WORLD_LOG" "$1" "$2" 2>/dev/null || printf '0\n'
+}
+
+# world_sequence <bead>: that bead's event names, oldest first, space separated
+world_sequence() {
+	python3 -c '
+import json, sys
+print(" ".join(o["event"] for o in map(json.loads, open(sys.argv[1])) if o["bead"] == sys.argv[2]))' \
+		"$WORLD_LOG" "$1" 2>/dev/null || printf '\n'
+}
+
+# world_pr <bead>: the number of the pull request carrying that bead's trailer, any state
+world_pr() {
+	(cd "$2" && gh pr list --state all --limit 50 --json number,body) | python3 -c '
+import json, sys
+for pr in sorted(json.load(sys.stdin), key=lambda p: p["number"]):
+    if "Bead: " + sys.argv[1] in [l.strip() for l in pr["body"].splitlines()]:
+        print(pr["number"])
+        break' "$1"
+}
+
+# world_tick_until <seconds> <fixture> <check...>: tick the driver until the check passes or time is
+# up. A tick that exits non-zero is printed and the loop goes on: the next tick re-reads the world.
+world_tick_until() {
+	local cap="$1" fixture="$2"; shift 2
+	local deadline=$(( $(date +%s) + cap )) n=0 rc=0
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		n=$((n + 1))
+		rc=0
+		drive run --once || rc=$?
+		[ "$rc" -eq 0 ] || printf 'tick %s exited %s\n' "$n" "$rc"
+		if "$@"; then
+			printf 'condition met after %s tick(s)\n' "$n"
+			return 0
+		fi
+		sleep 10
+	done
+	printf 'gave up after %s tick(s) and %ss\n' "$n" "$cap"
+	return 1
+}
+
 # feature_loop: drive the driver through one claim tick and one reap tick with the stub worker.
 # S3 scope: claim, worktree, pane, the workers' PRs, then reap and campaign.complete. The review
 # lane, the merges, and the bead closes the driver does itself land in S4; here the feature closes
@@ -307,7 +413,7 @@ feature_mux() {
 # config through GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, so the fixture repo is still reachable.
 feature_loop() {
 	local runid="$1" fixture="$2"
-	local smile session home gh_cfg git_cfg gh_token git_name git_email log bead_a bead_b bead_c ready
+	local smile log bead_a bead_b bead_c ready
 	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL loop: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
 	smile="$fixture/smile/smile"
 	[ -f "$fixture/smile/py/run.py" ] || { printf 'NOT IMPLEMENTED loop (no smile/py/run.py stamped)\n'; exit 2; }
@@ -318,35 +424,8 @@ feature_loop() {
 	git -C "$fixture" add -A
 	git -C "$fixture" diff --cached --quiet || git -C "$fixture" commit -qm "chore: smile init"
 
-	session=$(mf "$runid" tmux_session)
-	tmux has-session -t "=$session" 2>/dev/null || { printf 'FAIL loop: tmux session %s missing\n' "$session"; return 1; }
-	home="$EVIDENCE_ROOT/$runid/home"
-	gh_cfg="${GH_CONFIG_DIR:-$HOME/.config/gh}"
-	git_cfg="$home/gitconfig"
-	# gh keeps this account's token in the login keyring, which it finds under the real $HOME, so
-	# the token is read here, while HOME is still the real one, and handed to the run as GH_TOKEN.
-	gh_token=$(gh auth token 2>/dev/null) || { printf 'FAIL loop: gh has no token for this account\n'; return 1; }
-	git_name=$(git config --global --get user.name 2>/dev/null || true)
-	git_email=$(git config --global --get user.email 2>/dev/null || true)
-	mkdir -p "$home"
-	# A scratch git config of its own: the gh credential helper, and the real identity so commits
-	# still carry it. Every process in the run also gets GIT_CONFIG_NOSYSTEM=1, because the Xcode
-	# command-line tools put `credential.helper = osxkeychain` in the SYSTEM config, which still
-	# applies under GIT_CONFIG_GLOBAL; under a scratch HOME there is no login keychain, so macOS
-	# would pop a "reset keychain" dialog on every fetch and push. GH_TOKEN answers the gh helper,
-	# so no token is written to disk and the keychain is never touched.
-	printf '[credential]\n\thelper = !gh auth git-credential\n[user]\n\tname = %s\n\temail = %s\n' \
-		"$git_name" "$git_email" > "$git_cfg"
-	# The pane inherits the multiplexer session's environment, not the driver's, so the worker gets
-	# the same scratch world through a wrapper rather than through SMILE_WORKER_CMD alone.
-	cat > "$home/worker-env" <<WRAPEOF
-#!/bin/sh
-export HOME="$home" GIT_CONFIG_GLOBAL="$git_cfg" GIT_CONFIG_NOSYSTEM=1
-export GH_CONFIG_DIR="$gh_cfg" GH_TOKEN="$gh_token"
-exec "$SCRIPT_DIR/stub-worker" "\$@"
-WRAPEOF
-	chmod +x "$home/worker-env"
-	log="$fixture/.factory/events.jsonl"
+	world_up "$runid" "$fixture" || return 1
+	log="$WORLD_LOG"
 
 	# bead A is ready and bead B is blocked by it, so one more independent bead gives the tick
 	# exactly two claimable beads.
@@ -362,19 +441,8 @@ WRAPEOF
 	[ "$ready" = "$(printf '%s\n%s\n' "$bead_a" "$bead_c" | sort | tr '\n' ' ' | sed 's/ $//')" ] \
 		|| { printf 'FAIL loop: expected A and C ready, got [%s]\n' "$ready"; return 1; }
 
-	loop_drive() {
-		env HOME="$home" GH_CONFIG_DIR="$gh_cfg" GIT_CONFIG_GLOBAL="$git_cfg" GH_TOKEN="$gh_token" \
-			GIT_CONFIG_NOSYSTEM=1 \
-			SMILE_MUX_SESSION="$session" SMILE_WORKER_CMD="$home/worker-env" \
-			"$smile" run "$@"
-	}
-	# loop_events <bead> <event>: how many such events the log holds for that bead
-	loop_events() {
-		python3 -c '
-import json, sys
-print(sum(1 for o in map(json.loads, open(sys.argv[1])) if o["bead"] == sys.argv[2] and o["event"] == sys.argv[3]))' \
-			"$log" "$1" "$2" 2>/dev/null || printf '0\n'
-	}
+	loop_drive() { drive run "$@"; }
+	loop_events() { world_events "$@"; }
 	# loop_prs <bead>...: how many open PRs carry a `Bead: <id>` trailer for one of these beads
 	loop_prs() {
 		(cd "$fixture" && gh pr list --state open --limit 50 --json number,body) | python3 -c '
@@ -425,6 +493,182 @@ print(sum(1 for pr in json.load(sys.stdin)
 	loop_tail
 	printf 'PASS loop\n'
 }
+
+
+# feature_review: the whole lane on one bead. The stub worker opens a pull request, the stub reviewer
+# rejects it once, the worker fixes what the issue names, the second review approves, and the driver
+# merges and closes the bead. Asserted against GitHub and the event log, never the driver's summary.
+#
+# --real-review runs the signed-in headless reviewer on the stub worker's trivial diff instead. It
+# only has to produce a verdict with a non-empty detail; what it decides is its own business.
+feature_review() {
+	local runid="$1" fixture="$2" real="$3"
+	local bead_a pr issues want got state
+	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL review: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	[ -f "$fixture/smile/py/review.py" ] || { printf 'NOT IMPLEMENTED review (no smile/py/review.py stamped)\n'; exit 2; }
+
+	"$fixture/smile/smile" init || { printf 'FAIL review: smile init exited %s\n' "$?"; return 1; }
+	git -C "$fixture" add -A
+	git -C "$fixture" diff --cached --quiet || git -C "$fixture" commit -qm "chore: smile init"
+
+	if [ "$real" -eq 1 ]; then WORLD_CHANGES_ONCE=0; else WORLD_CHANGES_ONCE=1; fi
+	world_up "$runid" "$fixture" || return 1
+	# --real-review wants the signed-in claude, which is reached through its own wrapper: the rest of
+	# the run keeps the scratch HOME, and only the reviewer steps back into the real one.
+	if [ "$real" -eq 1 ]; then review_real_cmd || return 1; fi
+
+	# bead A is the whole lane: the feature stops the moment its pane is reaped, and asserts nothing
+	# about bead B, which bd unblocks only once A has closed.
+	bead_a=$(mf "$runid" bead_a)
+	printf 'bead %s, reviewer %s\n' "$bead_a" "${WORLD_REVIEW_CMD:-the real claude -p}"
+
+	if [ "$real" -eq 1 ]; then
+		review_real "$fixture" "$bead_a"
+		return $?
+	fi
+
+	world_tick_until 600 "$fixture" review_landed "$bead_a" \
+		|| { printf 'FAIL review: the lane did not land bead %s\n' "$bead_a"; review_dump "$fixture" "$bead_a"; return 1; }
+
+	# the pull request merged, on GitHub, not in the log
+	pr=$(world_pr "$bead_a" "$fixture")
+	[ -n "$pr" ] || { printf 'FAIL review: no pull request carries a Bead trailer for %s\n' "$bead_a"; return 1; }
+	state=$(cd "$fixture" && gh pr view "$pr" --json state --jq .state)
+	printf 'pull request #%s is %s\n' "$pr" "$state"
+	[ "$state" = "MERGED" ] || { printf 'FAIL review: PR #%s is %s, want MERGED\n' "$pr" "$state"; return 1; }
+
+	# one review issue on this pull request, opened then closed
+	issues=$(cd "$fixture" && gh issue list --label review --state all --limit 100 --json number,state,body)
+	issues=$(printf '%s' "$issues" | python3 -c '
+import json, sys
+for i in sorted(json.load(sys.stdin), key=lambda i: i["number"]):
+    if "PR: #" + sys.argv[1] in [l.strip() for l in i["body"].splitlines()]:
+        print("#%s %s" % (i["number"], i["state"]))' "$pr")
+	printf 'review issues naming PR #%s:\n%s\n' "$pr" "$issues"
+	[ "$(printf '%s\n' "$issues" | grep -c 'CLOSED')" -eq 1 ] \
+		|| { printf 'FAIL review: want exactly one CLOSED review issue on PR #%s\n' "$pr"; return 1; }
+	[ "$(printf '%s\n' "$issues" | grep -c 'OPEN')" -eq 0 ] \
+		|| { printf 'FAIL review: a review issue on PR #%s is still open\n' "$pr"; return 1; }
+	(cd "$fixture" && gh pr view "$pr" --json comments --jq '.comments[].body') | grep -q '/issues/' \
+		|| { printf 'FAIL review: the pull request carries no comment linking an issue\n'; return 1; }
+
+	# the bead closed
+	state=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd list --all --json | python3 -c '
+import json, sys
+print(next(b["status"] for b in json.load(sys.stdin) if b["id"] == sys.argv[1]))' "$bead_a")
+	[ "$state" = "closed" ] || { printf 'FAIL review: bead %s is %s, want closed\n' "$bead_a" "$state"; return 1; }
+
+	# the sequence of contract section 9, plus the fix round's own pane.spawned
+	want="bead.claimed worktree.acquired pane.spawned pr.opened review.started issue.opened review.verdict pane.spawned review.started issue.resolved review.verdict pr.merged bead.closed pane.reaped"
+	got=$(world_sequence "$bead_a")
+	printf 'events for %s:\n  %s\n' "$bead_a" "$got"
+	[ "$got" = "$want" ] || { printf 'FAIL review: the event sequence is not the contract'"'"'s\n  want: %s\n' "$want"; return 1; }
+	printf 'PASS review\n'
+}
+
+# review_real_cmd: a wrapper running the signed-in `claude -p` under the real HOME, where its
+# credentials live. Everything else in the run stays in the scratch world; the reviewer only reads.
+# The argv is the lane's own default, read from the fixture's config.
+review_real_cmd() {
+	local model mode
+	model=$(drive config get reviewer.models | cut -d, -f1)
+	mode=$(drive config get worker.permission_mode)
+	[ -n "$model" ] || { printf 'FAIL review: no reviewer.models in the config\n'; return 1; }
+	cat > "$WORLD_HOME/real-reviewer" <<REALEOF
+#!/bin/sh
+export HOME="$HOME"
+exec claude -p --model $model --permission-mode $mode
+REALEOF
+	chmod +x "$WORLD_HOME/real-reviewer"
+	WORLD_REVIEW_CMD="$WORLD_HOME/real-reviewer"
+	printf 'real reviewer: claude -p --model %s --permission-mode %s\n' "$model" "$mode"
+}
+
+# review_landed <bead>: the lane is done with that bead when its pane has been reaped
+review_landed() { [ "$(world_events "$1" pane.reaped)" -ge 1 ]; }
+
+# review_verdict <bead>: a verdict has been written for that bead
+review_verdict() { [ "$(world_events "$1" review.verdict)" -ge 1 ]; }
+
+review_dump() {
+	printf -- '--- last events\n'
+	tail -20 "$WORLD_LOG" 2>/dev/null || true
+	printf -- '--- pull requests\n'
+	(cd "$1" && gh pr list --state all --json number,state,headRefName) || true
+	printf -- '--- issues\n'
+	(cd "$1" && gh issue list --label review --state all --json number,state,title) || true
+}
+
+# review_real <fixture> <bead>: one bead through the signed-in headless reviewer. Minutes, not
+# seconds, and the only assertion is that a verdict with a non-empty detail was written.
+review_real() {
+	local fixture="$1" bead="$2" detail
+	world_tick_until 900 "$fixture" review_verdict "$bead" \
+		|| { printf 'FAIL review: no verdict for %s\n' "$bead"; review_dump "$fixture"; return 1; }
+	detail=$(python3 -c '
+import json, sys
+for o in map(json.loads, open(sys.argv[1])):
+    if o["event"] == "review.verdict" and o["bead"] == sys.argv[2]:
+        print(json.dumps({"detail": o["detail"], "sha": o["sha"], "pr": o["pr"]}))
+        break' "$WORLD_LOG" "$bead")
+	printf 'verdict: %s\n' "$detail"
+	printf '%s' "$detail" | grep -q '"detail": *"[^"]' \
+		|| { printf 'FAIL review: the verdict detail is empty\n'; return 1; }
+	printf -- '--- the review the reviewer wrote\n'
+	cat "$fixture"/.factory/reviews/*.md
+	printf 'PASS review (real reviewer)\n'
+}
+
+# feature_gate: with the gate holding every approve, the driver labels the pull request and stops.
+# A person merges it, and the next tick closes the bead.
+feature_gate() {
+	local runid="$1" fixture="$2"
+	local bead_a pr labels state
+	[ "$(mf "$runid" install)" = "stamped" ] || { printf 'FAIL gate: fixture not stamped (install=%s)\n' "$(mf "$runid" install)"; return 1; }
+	[ -f "$fixture/smile/py/gate.py" ] || { printf 'NOT IMPLEMENTED gate (no smile/py/gate.py stamped)\n'; exit 2; }
+
+	"$fixture/smile/smile" init || { printf 'FAIL gate: smile init exited %s\n' "$?"; return 1; }
+	git -C "$fixture" add -A
+	git -C "$fixture" diff --cached --quiet || git -C "$fixture" commit -qm "chore: smile init"
+	world_up "$runid" "$fixture" || return 1
+
+	bead_a=$(mf "$runid" bead_a)
+
+	drive gate all || { printf 'FAIL gate: smile gate all exited %s\n' "$?"; return 1; }
+	printf -- '--- gate status\n'
+	drive gate status
+	[ "$(drive gate status)" = "mode all" ] || { printf 'FAIL gate: status is not `mode all`\n'; return 1; }
+
+	world_tick_until 600 "$fixture" review_verdict "$bead_a" \
+		|| { printf 'FAIL gate: no verdict for %s\n' "$bead_a"; review_dump "$fixture"; return 1; }
+
+	pr=$(world_pr "$bead_a" "$fixture")
+	[ -n "$pr" ] || { printf 'FAIL gate: no pull request for %s\n' "$bead_a"; return 1; }
+	printf -- '--- held pull request\n'
+	(cd "$fixture" && gh pr view "$pr" --json number,state,labels)
+	state=$(cd "$fixture" && gh pr view "$pr" --json state --jq .state)
+	labels=$(cd "$fixture" && gh pr view "$pr" --json labels --jq '[.labels[].name] | join(",")')
+	[ "$state" = "OPEN" ] || { printf 'FAIL gate: PR #%s is %s, want OPEN\n' "$pr" "$state"; return 1; }
+	printf '%s' "$labels" | grep -q 'smile:approved' \
+		|| { printf 'FAIL gate: PR #%s carries labels [%s], want smile:approved\n' "$pr" "$labels"; return 1; }
+	[ "$(world_events "$bead_a" pr.merged)" -eq 0 ] || { printf 'FAIL gate: a held approve merged\n'; return 1; }
+
+	printf -- '--- the human merges\n'
+	(cd "$fixture" && gh pr merge "$pr" --squash) \
+		|| { printf 'FAIL gate: manual merge exited %s\n' "$?"; return 1; }
+	world_tick_until 300 "$fixture" gate_closed "$bead_a" \
+		|| { printf 'FAIL gate: the bead did not close after the merge\n'; review_dump "$fixture"; return 1; }
+
+	state=$(cd "$fixture" && BD_NON_INTERACTIVE=1 bd list --all --json | python3 -c '
+import json, sys
+print(next(b["status"] for b in json.load(sys.stdin) if b["id"] == sys.argv[1]))' "$bead_a")
+	[ "$state" = "closed" ] || { printf 'FAIL gate: bead %s is %s, want closed\n' "$bead_a" "$state"; return 1; }
+	printf 'events for %s:\n  %s\n' "$bead_a" "$(world_sequence "$bead_a")"
+	printf 'PASS gate\n'
+}
+
+# gate_closed <bead>: the driver has recorded the human's merge and closed the bead
+gate_closed() { [ "$(world_events "$1" bead.closed)" -ge 1 ]; }
 
 loop_tail() { printf -- '--- last events\n'; tail -15 "$log"; }
 
