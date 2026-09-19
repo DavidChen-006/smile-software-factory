@@ -7,7 +7,7 @@ How the SMILE factory itself gets built, spike by spike. This file governs the p
 Three roles, no others.
 
 - **Lead** (the interactive session). Writes the brief, pins rulings into the contract, merges, and runs the watchtower cron. Never builds and never verifies by hand beyond a spot check.
-- **Builder** (fresh Opus 5 subagent, one per spike or fix round). Reads the contract section for the spike, writes the code and the unit tests, runs the unit suite, pushes, reports. Budget 10 minutes. Runs nothing live: no fixtures, no GitHub, no real reviewer.
+- **Builder** (fresh Opus 5 subagent, one per spike or fix round). Reads the contract section for the spike, writes the code and the unit tests, runs the whole unit suite (`tests/all.sh`, never only its own file: S5 broke 18 driver tests that its builder never ran), pushes, reports. Budget 10 minutes. Runs nothing live: no fixtures, no GitHub, no real reviewer.
 - **Verifier** (fresh subagent, default model). Reads the feature map pages for the spike, drives the branch with the `verify-smile` primitives, pastes evidence, says MERGE or DO NOT MERGE. Budget 12 minutes. Verifies the spike's own evidence list, not every edge it can imagine; an edge worth testing later becomes a line in the next brief.
 
 There is no code-reviewer role. Style and structure are the builder's job and the contract's job; the verifier checks behaviour only.
