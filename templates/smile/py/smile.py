@@ -13,9 +13,12 @@ import sys
 from collections import Counter
 
 sys.dont_write_bytecode = True  # no __pycache__ in the stamped repo; set before the modules beside this file load
+import audit
 import config
 import events
+import gate
 import mux
+import review
 import run
 import worktree
 
@@ -211,6 +214,9 @@ COMMANDS = {
     "status": cmd_status,
     "mux": mux.cmd_mux,
     "run": run.cmd_run,
+    "review": review.cmd_review,
+    "gate": gate.cmd_gate,
+    "audit": audit.cmd_audit,
 }
 
 

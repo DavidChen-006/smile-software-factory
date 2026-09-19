@@ -25,6 +25,7 @@ from tests.test_core import TS, make_repo, set_config, smile
 SESSION = f"s3py-{os.getpid()}"
 TEMPLATE = "order {{bead_id}} / {{bead_title}} / {{bead_description}} / {{spec_path}} / {{base_branch}}\n"
 WORKER = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SMILE_STUB_LOG\"\nexit 0\n"
+NO_PRS = "#!/bin/sh\nprintf '[]\\n'\n"  # a gh with no pull requests: the review step finds nothing to do
 # the log path is baked into this one: a tmux pane inherits the server's environment, so under real
 # tmux nothing but the argv reaches the worker, which is exactly what the test is checking.
 ENV_WORKER = ("#!/bin/sh\nprintf 'BEAD=%s|TITLE=%s|REPO=%s|BRANCH=%s\\n' \"$SMILE_BEAD\" \"$SMILE_BEAD_TITLE\" "
@@ -135,6 +136,7 @@ class DriverCase(unittest.TestCase):
         self.bin.mkdir()
         self.worker = write_exec(self.bin / "stub-worker", WORKER)
         write_exec(self.bin / "tmux", FAKE_TMUX)
+        write_exec(self.bin / "gh", NO_PRS)
         self.env = {"HOME": str(self.home), "PATH": f"{self.bin}:{os.environ['PATH']}",
                     "FAKE_TMUX_LOG": str(self.log), "FAKE_TMUX_STATE": str(self.state),
                     "SMILE_MUX_SESSION": SESSION, "SMILE_STUB_LOG": str(self.stub),
@@ -587,6 +589,75 @@ class CrashTest(DriverCase):
         self.assertEqual(self.events()[-2:], [("worker.crashed", first["bead"], "attempt 2"),
                                               ("worker.crashed", first["bead"], "escalated")])
         self.assertEqual(self.filed("crashed"), [f"{first['bead']}.json"])
+
+
+class WaitingTest(DriverCase):
+    """A worker that finished a round and opened its pull request is waiting, not crashed."""
+
+    beads = ("alpha",)
+
+    def park(self) -> dict:
+        """One claimed bead whose worker opened a pull request and whose pane then exited."""
+        self.tick()
+        state = self.one_run()
+        r = smile(self.repo, "event", "pr.opened", f"bead={state['bead']}", "pr=4",
+                  "actor=worker", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.kill_window(state["handle"])
+        return state
+
+    def test_a_dead_pane_with_a_pull_request_parks_silently_and_keeps_its_worktree(self) -> None:
+        state = self.park()
+        before = self.events()
+        self.tick()
+        self.assertEqual(self.events(), before, "parking a run logged something")
+        self.assertEqual((self.runs(), self.filed("waiting")), ({}, [f"{state['bead']}.json"]))
+        self.assertEqual(self.runs("waiting")[f"{state['bead']}.json"], state, "the run state changed")
+        self.assertEqual([c["argv"] for c in self.calls() if c["argv"][0] == "kill-window"], [])
+        held = subprocess.run(["treehouse", "get", "--lease", "--lease-holder", "check"], cwd=self.repo,
+                              env={**os.environ, **self.env}, capture_output=True, text=True, check=True)
+        self.assertNotEqual(held.stdout.strip(), state["worktree"], "the lease was given up")
+
+    def test_a_parked_run_is_not_crashed_and_is_not_respawned(self) -> None:
+        self.park()
+        self.tick()
+        self.tick()
+        self.assertNotIn("worker.crashed", [e for e, _, _ in self.events()])
+        self.assertEqual(len(self.spawns()), 1, "a waiting run was respawned")
+        self.assertEqual(self.filed("crashed"), [])
+
+    def test_a_dead_pane_with_no_pull_request_still_crashes(self) -> None:
+        self.tick()
+        state = self.one_run()
+        self.kill_window(state["handle"])
+        self.tick()
+        self.assertEqual(self.events()[-2:], [("worker.crashed", state["bead"], "attempt 1"),
+                                              ("pane.spawned", state["bead"], self.one_run()["handle"])])
+        self.assertEqual(self.filed("waiting"), [])
+
+    def test_a_parked_run_whose_bead_closes_is_reaped(self) -> None:
+        state = self.park()
+        self.tick()
+        self.assertEqual(self.filed("waiting"), [f"{state['bead']}.json"])
+        bd(self.repo, "close", state["bead"])
+        self.tick()
+        self.assertEqual(self.events()[-2:], [("pane.reaped", state["bead"], state["handle"]),
+                                              ("campaign.complete", None, None)])
+        self.assertEqual((self.filed("waiting"), self.filed("done")), ([], [f"{state['bead']}.json"]))
+        held = subprocess.run(["treehouse", "get", "--lease", "--lease-holder", "check"], cwd=self.repo,
+                              env={**os.environ, **self.env}, capture_output=True, text=True, check=True)
+        self.assertEqual(held.stdout.strip(), state["worktree"], "the worktree was not returned")
+
+    def test_a_waiting_run_keeps_the_campaign_running_and_counts_against_max_parallel(self) -> None:
+        self.park()
+        set_config(self.repo, "max_parallel", "1")
+        seed(self.repo, "gamma")
+        self.tick()
+        self.assertNotIn("campaign.complete", [e for e, _, _ in self.events()])
+        self.assertEqual(self.runs(), {}, "the cap ignored the waiting run")
+        self.assertEqual(len(self.spawns()), 1)
+        self.assertEqual([b["status"] for b in bd_json(self.repo, "list", "--all") if b["title"] == "gamma"],
+                         ["open"])
 
 
 class CompleteTest(DriverCase):
