@@ -158,9 +158,83 @@ class Driver:
         self.prs = self.every_pr = None  # the tick's view of GitHub, read at most once each
         self.reap()
         self.review_pending()
+        self.watchtower()  # before the pause check: a paused campaign is exactly when it must be watching
         if not os.path.exists(f"{self.factory}/pause"):  # pause already logged driver.paused; log nothing here
             self.claim()
         return self.complete()
+
+    # ------------------------------------------------------------ watchtower (contract section 11)
+    def watchtower(self) -> None:
+        """One long-lived observer pane per campaign, respawned whenever its handle is dead.
+
+        Its failure is never a bead's failure: a spawn that does not take is one stderr line and
+        the tick goes on.
+        """
+        if config.get(self.root, "watchtower") != "on":
+            return
+        path = f"{self.factory}/watchtower.json"
+        state = self.read_watchtower(path)
+        if state and self.mux("alive", state["handle"]).returncode == 0:
+            return
+        try:
+            order = self.write_watch_order()
+            proc = self.mux("spawn", "watchtower", self.repo, *self.watch_pane(order))
+            if proc.returncode != 0:
+                raise RuntimeError(f"spawn failed: {stderr(proc)}")
+            handle, stamp = proc.stdout.decode().strip(), now()
+            events.append(self.root, "pane.spawned", bead=None, actor="driver", detail=handle, ts=stamp)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"handle": handle, "spawned_at": stamp},
+                                   sort_keys=True, separators=(",", ":")) + "\n")
+        except Exception as e:  # noqa: BLE001  the observer never takes the campaign down with it
+            print(f"smile: watchtower not started: {e}", file=sys.stderr)
+
+    def read_watchtower(self, path: str) -> dict | None:
+        """The watchtower state, or None when the file is missing or names no handle."""
+        try:
+            with open(path, encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return state if isinstance(state, dict) and state.get("handle") else None
+
+    def write_watch_order(self) -> str:
+        """Render prompts/watchtower.md into .factory/orders/watchtower.md and return that path."""
+        with open(f"{self.root}/prompts/watchtower.md", encoding="utf-8") as f:
+            template = f.read()
+        values = {"spec_path": worktree.spec_path(self.repo), "base_branch": self.base_branch,
+                  "repo": self.repo}
+        order = f"{self.factory}/orders/watchtower.md"
+        os.makedirs(os.path.dirname(order), exist_ok=True)
+        with open(order, "w", encoding="utf-8") as f:
+            f.write(worktree.render(template, values))
+        return order
+
+    def watch_pane(self, order: str) -> list:
+        """The watchtower pane's argv; SMILE_ACTOR is what signs its `smile event` lines."""
+        return ["env", f"SMILE_REPO={self.repo}", f"SMILE_BASE_BRANCH={self.base_branch}",
+                "SMILE_ACTOR=watchtower", *self.watch_cmd(order)]
+
+    def watch_cmd(self, order: str) -> list:
+        """SMILE_WATCHTOWER_CMD plus the order path, else claude in plan mode with the order text."""
+        override = os.environ.get("SMILE_WATCHTOWER_CMD")
+        if override:
+            return [*override.split(), order]
+        with open(order, encoding="utf-8") as f:
+            text = f.read()
+        return ["claude", "--model", config.get(self.root, "watchtower.model"),
+                "--permission-mode", "plan", text]
+
+    def reap_watchtower(self) -> None:
+        """Kill the observer and forget it, before the campaign is called complete."""
+        path = f"{self.factory}/watchtower.json"
+        state = self.read_watchtower(path)
+        if state is None:
+            return
+        self.mux("kill", state["handle"])  # a dead handle is not an error
+        events.append(self.root, "pane.reaped", bead=None, actor="driver", detail=state["handle"])
+        with suppress(FileNotFoundError):
+            os.remove(path)
 
     def reap(self) -> None:
         status = {b.get("id"): b.get("status") for b in beads(self.repo, ["bd", "list", "--all", "--json"])}
@@ -330,6 +404,7 @@ class Driver:
     def complete(self) -> bool:
         if self.live_files() or any(b.get("status") in OPEN for b in beads(self.repo, ["bd", "list", "--json"])):
             return False
+        self.reap_watchtower()  # the observer outlives every worker and dies just before the campaign
         events.append(self.root, "campaign.complete", actor="driver")
         return True
 
