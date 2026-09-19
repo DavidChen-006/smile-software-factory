@@ -18,4 +18,5 @@ export SMILE_ROOT="$root"
 
 target="$root/smile/py/smile.py"
 [ -f "$target" ] || { printf 'smile: py runtime missing (%s)\n' "$target" >&2; exit 2; }
-exec python3 "$target" "$cmd" "$@"
+command -v uv >/dev/null 2>&1 || { printf 'smile: uv is not on PATH\n' >&2; exit 2; }
+exec uv run "$target" "$cmd" "$@"

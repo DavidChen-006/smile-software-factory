@@ -4,7 +4,6 @@ The lane reaches GitHub only through `gh`, and only through this file, so one pl
 factory pull request is: one whose body carries a `Bead: <id>` line. Everything here is a read of
 the world; the writes (issues, comments, labels, merges) stay with the command that decides them.
 """
-from __future__ import annotations
 
 import json
 

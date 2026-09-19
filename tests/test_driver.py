@@ -8,7 +8,7 @@ worker variables reach a pane that inherits the tmux server's environment, not t
 HOME points at a scratch directory in every run, so the real ~/.claude.json and the real treehouse
 pool are never touched.
 
-Run from the repo root: python3 -m unittest tests.test_driver -v
+Run from the repo root: uv run python -m unittest tests.test_driver -v
 """
 import json
 import os

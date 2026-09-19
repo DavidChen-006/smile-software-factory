@@ -9,9 +9,8 @@ reviewer is a script named by SMILE_REVIEW_CMD that prints whatever review the t
 HOME points at a scratch directory in every run, so the real ~/.claude.json, the real gh config, and
 the real treehouse pool are never touched.
 
-Run from the repo root: python3 -m unittest tests.test_review -v
+Run from the repo root: uv run python -m unittest tests.test_review -v
 """
-from __future__ import annotations
 
 import json
 import os

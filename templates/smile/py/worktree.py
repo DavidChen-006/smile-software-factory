@@ -5,7 +5,6 @@ and writes the main checkout's `.factory/`: one event log, one pause file, one s
 Everything here is a lookup of the world (repo, spec_path) or a pure rendering of it (order); the
 driver does the writing.
 """
-from __future__ import annotations
 
 import glob
 import os

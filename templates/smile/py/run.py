@@ -6,7 +6,6 @@ a pane lives in `.factory/runs/<bead>.json`; the pane itself is only ever touche
 checkout as its working directory, so a driver started in a linked worktree drives one factory and one
 treehouse pool. Failures raise: main turns them into one stderr line and exit 1.
 """
-from __future__ import annotations
 
 import glob
 import json

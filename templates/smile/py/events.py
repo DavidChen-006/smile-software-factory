@@ -3,7 +3,6 @@
 The factory directory is resolved through worktree.factory, so a linked worktree appends to the main
 checkout's log: one file per repo, however many worktrees write it.
 """
-from __future__ import annotations  # PEP 604 unions in annotations on the 3.9 floor
 
 import json
 import os

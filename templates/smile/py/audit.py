@@ -3,7 +3,6 @@
 The event log is the record of what the lane judged; GitHub is the record of what landed. Where they
 disagree, a human merged something unreviewed, and that is the whole of this command.
 """
-from __future__ import annotations
 
 import events
 import github

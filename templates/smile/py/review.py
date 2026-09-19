@@ -8,7 +8,6 @@ starts from the world as it is.
 
 Parsing the review is pure (`parse`); everything that touches GitHub, bd or the pane lives below it.
 """
-from __future__ import annotations
 
 import os
 import re

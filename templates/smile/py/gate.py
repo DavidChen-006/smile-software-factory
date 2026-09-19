@@ -3,7 +3,6 @@
 The whole state is `<factory>/gate.json`, `{"mode": <all|none|auto>, "beads": [...]}`. The review
 lane asks one question of it, `gated`, at verdict time; nothing else reads the file.
 """
-from __future__ import annotations
 
 import json
 import os
