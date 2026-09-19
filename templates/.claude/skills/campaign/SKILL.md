@@ -147,7 +147,8 @@ first. Relay **each printed line** to the user, in the order printed — the
 escalation lines first, exactly as they came. Nothing printed means nothing
 happened: say nothing. Never tail `.factory/events.jsonl` or
 `.factory/driver.log` yourself; `smile narrate` is the only narration surface,
-and it keeps the cursor so a later session resumes where this one stopped.
+and it remembers its place in the event log so a later session resumes from
+that offset.
 
 An escalation line (`watch.escalation`, `driver.paused`, or `worker.crashed`
 with detail `escalated`) means the campaign is parked and the user's ruling is
