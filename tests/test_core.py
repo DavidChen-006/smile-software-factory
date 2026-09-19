@@ -3,6 +3,7 @@
 Run from the repo root: uv run python -m unittest tests.test_core -v
 """
 
+import atexit
 import json
 import os
 import re
@@ -20,8 +21,30 @@ TOOLS = ("git", "gh", "claude", "bd", "treehouse", "tmux", "cmux", "herdr")
 SHIM_NEEDS = ("uv", "bash", "sed", "dirname")
 
 
-def make_repo(name: str = "smile-core") -> str:
-    """A scratch git repo stamped by install.py. Returned path is real (no /var -> /private/var drift)."""
+_PROTOTYPES: dict[bool, str] = {}  # initialised: parent dir of a built repo, copied for every later call
+
+
+def make_repo(name: str = "smile-core", init: bool = False) -> str:
+    """A scratch git repo stamped by install.py (and `smile init` when asked).
+
+    Stamping and `bd init` cost seconds, so the first call of each flavour builds the repo and every
+    later one copies that tree: the copy is a fresh repo with the same contents. Returned path is
+    real (no /var -> /private/var drift).
+    """
+    proto = _PROTOTYPES.get(init)
+    if proto is None:
+        proto = _PROTOTYPES[init] = _build_repo("proto", init)
+        atexit.register(shutil.rmtree, os.path.dirname(proto), ignore_errors=True)
+    parent = os.path.realpath(tempfile.mkdtemp(prefix="smile-copy-"))
+    shutil.copytree(os.path.dirname(proto), parent, symlinks=True, dirs_exist_ok=True)
+    path = os.path.join(parent, name)
+    os.rename(os.path.join(parent, os.path.basename(proto)), path)
+    # the copy carries the prototype's absolute paths; re-point the ones that matter
+    subprocess.run(["git", "-C", path, "config", "core.hooksPath", os.path.join(parent, "no-hooks")], check=True)
+    return path
+
+
+def _build_repo(name: str, init: bool) -> str:
     parent = os.path.realpath(tempfile.mkdtemp(prefix="smile-core-"))
     path = os.path.join(parent, name)
     os.mkdir(path)
@@ -35,6 +58,8 @@ def make_repo(name: str = "smile-core") -> str:
     os.mkdir(hooks)
     subprocess.run(["git", "-C", path, "config", "core.hooksPath", hooks], check=True)
     subprocess.run(["uv", "run", str(ROOT / "install.py"), path], check=True, stdout=subprocess.DEVNULL)
+    if init:
+        subprocess.run([f"{path}/smile/smile", "init"], cwd="/", check=True, stdout=subprocess.DEVNULL)
     return path
 
 
