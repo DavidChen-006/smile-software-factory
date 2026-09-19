@@ -151,7 +151,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/verify-smile.test.sh` runs `up`, asserts the fixture layout, runs `down`, asserts the repo is gone and the evidence remains. Run `bash tests/verify-smile.test.sh`.
+- [ ] `tests/live/verify-smile.test.sh` runs `up`, asserts the fixture layout, runs `down`, asserts the repo is gone and the evidence remains. Run `bash tests/live.sh`.
 
 **Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 

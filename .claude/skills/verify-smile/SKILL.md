@@ -155,8 +155,12 @@ Kill every tmux session you opened. `down` owns the fixture's; any session of yo
 	scripts/stub-worker       worker stand-in, see Drive
 	scripts/stub-reviewer     reviewer stand-in, see Drive
 
-	tests/verify-smile.test.sh   proves the primitives against a real fixture
-	tests/all.sh                 runs it with the other test files
+	tests/live/verify-smile.test.sh   the harness self-test: proves the primitives against a real fixture
+	tests/live.sh                     runs it (and any other live test file); minutes, needs a logged-in gh
+
+`tests/all.sh` is the offline unit suite and does not run it. Run the self-test yourself
+(`bash tests/live.sh`) when the pull request under verification touches this skill's scripts, or when
+a primitive misbehaves and you need to know whether the harness or the runtime is at fault.
 
 ## How a verifier uses this
 

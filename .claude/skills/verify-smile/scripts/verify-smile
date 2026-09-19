@@ -881,14 +881,27 @@ to run twice; refuses a runid with no manifest, and refuses to mark a run down u
 really gone, so a partial teardown stays retryable.'
 
 # repo_disposed <owner/name>: prints `gone` or `archived-renamed` and exits 0 when the repo is no
-# longer live under its own name. `gh repo view <old-name>` follows GitHub's rename redirect, so
-# compare nameWithOwner instead of trusting the exit code.
+# longer live under its own name; exits 1 when it is still live; exits 2 when gh could not answer
+# (network down, auth expired). A failed `gh repo view` is unknown, never gone: treating it as gone
+# once marked a live repo deleted during a GitHub outage.
+# `gh repo view <old-name>` follows GitHub's rename redirect, so compare nameWithOwner instead of
+# trusting the exit code.
 repo_disposed() {
-	local repo="$1" actual archived
-	actual=$(gh repo view "$repo" --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+	local repo="$1" actual archived err rc=0
+	err=$(mktemp "${TMPDIR:-/tmp}/verify-smile-gh.XXXXXX")
+	actual=$(gh repo view "$repo" --json nameWithOwner --jq .nameWithOwner 2>"$err") || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		if grep -qiE 'could not resolve to a repository|HTTP 404|not found' "$err"; then
+			rm -f "$err"
+			printf 'gone'
+			return 0
+		fi
+		rm -f "$err"
+		return 2
+	fi
+	rm -f "$err"
 	if [ -z "$actual" ]; then
-		printf 'gone'
-		return 0
+		return 2
 	fi
 	if [ "$actual" = "$repo-trash" ]; then
 		archived=$(gh repo view "$repo-trash" --json isArchived --jq .isArchived 2>/dev/null || true)
@@ -977,8 +990,10 @@ cmd_down_inner() {
 		esac
 	fi
 
-	local disposal
-	if disposal=$(repo_disposed "$repo"); then
+	local disposal probe=0
+	disposal=$(repo_disposed "$repo") || probe=$?
+	[ "$probe" -ne 2 ] || die "cannot tell whether $repo still exists (gh repo view failed: network or auth?); run 'verify-smile down --run $RUNID' again once gh works"
+	if [ "$probe" -eq 0 ]; then
 		if [ "$disposal" = "gone" ]; then
 			[ "$(mf "$RUNID" stage)" = "names" ] && disposal="never-created" || disposal="deleted"
 		fi
@@ -994,7 +1009,7 @@ cmd_down_inner() {
 		printf 'verify-smile: run `gh auth refresh -h github.com -s delete_repo` to enable true deletion of fixture repos\n' >&2
 	fi
 	repo_disposed "$repo" >/dev/null \
-		|| die "repo $repo still exists and is not archived as -trash; run 'verify-smile down --run $RUNID' again"
+		|| die "repo $repo still exists (or gh could not confirm it is gone) and is not archived as -trash; run 'verify-smile down --run $RUNID' again"
 
 	mf_set "$RUNID" state down disposal "$disposal"
 	[ -d "$evidence" ] || die "evidence dir vanished: $evidence"
