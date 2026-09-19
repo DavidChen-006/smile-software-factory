@@ -80,6 +80,32 @@ elif verb != "set-option":
 '''
 
 
+def is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def parent_of(pid: int) -> int:
+    """The pid's parent per `ps`; 0 when ps does not know it."""
+    out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True,
+                         check=False).stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
+def descends_from(pid: int, ancestor: int) -> bool:
+    """Walk the parent chain: `uv run` puts one or more processes between the shim and the runtime."""
+    for _ in range(16):
+        pid = parent_of(pid)
+        if pid == ancestor:
+            return True
+        if pid <= 1:
+            return False
+    return False
+
+
 def write_exec(path: Path, text: str) -> str:
     path.write_text(text)
     path.chmod(0o755)
@@ -227,14 +253,24 @@ class SingletonTest(DriverCase):
 
 
 class ConcurrentTest(DriverCase):
-    def test_a_second_driver_while_the_first_holds_the_pid_file_refuses(self) -> None:
+    def test_a_second_driver_names_the_runtime_pid_the_file_holds(self) -> None:
+        """driver.pid holds the runtime's own pid, which under `uv run` is a child of what we launched.
+
+        Signalling the shim's pid kills uv; SIGKILL there orphans the runtime, so the file must name
+        the process a caller has to signal, and the refusal must name what the file holds.
+        """
         held = self.popen("--interval", "60")
         self.addCleanup(held.communicate)  # drains and closes the pipes, then waits
         self.addCleanup(held.terminate)
-        self.wait_for(self.pid_file().exists, "the pid file")
+        self.wait_for(lambda: self.pid_file().read_text().strip().isdigit()
+                      if self.pid_file().exists() else False, "the pid file")
+        pid = int(self.pid_file().read_text().strip())
         r = self.run_driver("--once")
         self.assertEqual((r.returncode, r.stdout), (1, b""))
-        self.assertRegex(r.stderr.decode(), rf"^smile: driver already running \(pid {held.pid}\)\n$")
+        self.assertEqual(r.stderr.decode(), f"smile: driver already running (pid {pid})\n")
+        self.assertTrue(is_alive(pid), f"the file names pid {pid}, which is not running")
+        self.assertTrue(descends_from(pid, held.pid),
+                        f"pid {pid} is not a descendant of the launched process {held.pid}")
 
     def test_two_drivers_started_together_claim_each_bead_once(self) -> None:
         first, second = self.popen("--once"), self.popen("--once")

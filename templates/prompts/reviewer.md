@@ -38,27 +38,35 @@ diff does not fix stays blocking, and you say so.
 
 Name each pstack principle that shaped a judgment by its name, for example `minimize-reader-load`,
 `laziness-protocol`, `prove-it-works`, `boundary-discipline`, `model-the-domain`,
-`sequence-verifiable-units`. End your review with a `Principles applied` line naming them.
+`sequence-verifiable-units`.
 
 ## How to answer
 
-Write your reasoning first, as long as it needs to be. Then end with the verdict line, exactly:
+Write your reasoning first, as long as it needs to be. Then end your review with exactly three
+things, in this order: the `Principles applied` line, the verdict line, and the finding lines. Every
+one of them starts at column 0; a line with a leading space or tab is not read.
 
-	Verdict: APPROVE
+```
+Principles applied: prove-it-works, boundary-discipline
+Verdict: APPROVE
+```
 
 or
 
-	Verdict: REQUEST CHANGES
+```
+Principles applied: prove-it-works, boundary-discipline
+Verdict: REQUEST CHANGES
+- [Critical] <what is wrong, where, and what it breaks>
+- [Important] <what is wrong, where, and what it breaks>
+```
 
-`REQUEST CHANGES` must be followed by at least one blocking finding, each on its own line:
+`REQUEST CHANGES` must be followed by at least one blocking finding. One finding per line, one line
+per finding; each becomes one GitHub issue the author must fix, so the text has to stand alone. A
+non-blocking suggestion is written
 
-	- [Critical] <what is wrong, where, and what it breaks>
-	- [Important] <what is wrong, where, and what it breaks>
-
-One finding per line, one line per finding; each becomes one GitHub issue the author must fix, so
-the text has to stand alone. A non-blocking suggestion is written
-
-	- [Suggestion] <what would be better>
+```
+- [Suggestion] <what would be better>
+```
 
 and opens no issue. Only `[Critical]` and `[Important]` block. `REQUEST CHANGES` with no blocking
 line is not a verdict and the review is thrown away, so do not ask for changes you cannot name.

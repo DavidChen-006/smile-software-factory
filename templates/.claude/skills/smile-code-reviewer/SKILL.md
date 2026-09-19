@@ -35,19 +35,26 @@ carries `PR: #<n>` are the findings already raised on it; read them before judgi
 
 Name each pstack principle that shaped a judgment by its name (`minimize-reader-load`,
 `laziness-protocol`, `prove-it-works`, `boundary-discipline`, `model-the-domain`,
-`sequence-verifiable-units`), and end with a `Principles applied` line naming them.
+`sequence-verifiable-units`).
 
 ## How to answer
 
-Reasoning first, then the verdict line, exactly one of:
+Reasoning first, then the ending: the `Principles applied` line, then the verdict line, then the
+finding lines. Every one of them starts at column 0; a line with a leading space or tab is not read.
 
-	Verdict: APPROVE
-	Verdict: REQUEST CHANGES
+```
+Principles applied: prove-it-works, boundary-discipline
+Verdict: APPROVE
+```
 
 `REQUEST CHANGES` is followed by at least one blocking finding, one per line:
 
-	- [Critical] <what is wrong, where, and what it breaks>
-	- [Important] <what is wrong, where, and what it breaks>
+```
+Principles applied: prove-it-works, boundary-discipline
+Verdict: REQUEST CHANGES
+- [Critical] <what is wrong, where, and what it breaks>
+- [Important] <what is wrong, where, and what it breaks>
+```
 
 Each blocking line becomes one GitHub issue, so its text must stand alone. A non-blocking note is
 `- [Suggestion] <what would be better>` and opens no issue. `REQUEST CHANGES` with no blocking line

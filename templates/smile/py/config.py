@@ -8,6 +8,7 @@ SCHEMA = {
     "worker.model": "opus",
     "worker.permission_mode": "acceptEdits",
     "reviewer.models": "opus",
+    "reviewer.timeout": "600",
     "max_parallel": "3",
     "watchtower": "on",
     "merge": "auto",
