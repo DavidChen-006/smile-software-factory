@@ -20,7 +20,7 @@ import time
 import unittest
 from pathlib import Path
 
-from tests.test_core import TS, make_repo, set_config, smile
+from tests.test_core import TS, make_repo, set_config, smile, smile_inproc
 
 SESSION = f"s3py-{os.getpid()}"
 TEMPLATE = "order {{bead_id}} / {{bead_title}} / {{bead_description}} / {{spec_path}} / {{base_branch}}\n"
@@ -146,8 +146,7 @@ class DriverCase(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = make_repo("smile-drv", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
-        init = smile(self.repo, "init")
-        self.assertEqual(init.returncode, 0, init.stderr)
+        set_config(self.repo, "watchtower", "off")  # S5's pane is test_watchtower's subject, not this suite's
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "stamp"], check=True, stdout=subprocess.DEVNULL)
         seed(self.repo, *self.beads)
@@ -170,6 +169,10 @@ class DriverCase(unittest.TestCase):
 
     # ------------------------------------------------------------ driving
     def run_driver(self, *args: str, **env: str) -> subprocess.CompletedProcess:
+        # behaviour, not shim dispatch: in-process, so the test does not pay a `uv run` start per tick
+        return smile_inproc(self.repo, "run", *args, env={**self.env, **env})
+
+    def run_driver_shim(self, *args: str, **env: str) -> subprocess.CompletedProcess:
         return smile(self.repo, "run", *args, env={**self.env, **env})
 
     def popen(self, *args: str, repo: str = "", **env: str) -> subprocess.Popen:
@@ -223,6 +226,24 @@ class DriverCase(unittest.TestCase):
         states = self.runs()
         self.assertEqual(len(states), 1, states)
         return next(iter(states.values()))
+
+
+class ShimTest(DriverCase):
+    """The two things the in-process tests do not cover: the shim's dispatch and `init` on a live repo."""
+
+    beads = ()
+
+    def test_init_on_an_initialised_repo(self) -> None:
+        r = smile(self.repo, "init")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.decode(), "".join(f"exists {t}\n" for t in (
+            ".beads", "treehouse.toml", ".worktreeinclude", ".factory", ".factory/events.jsonl")))
+
+    def test_tick_through_the_shim(self) -> None:
+        r = self.run_driver_shim("--once")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
+        names = [e for e, _, _ in self.events()]  # dispatch only: the tick's own events are asserted in-process
+        self.assertEqual((names[0], names[-1]), ("campaign.start", "campaign.complete"), names)
 
 
 class SingletonTest(DriverCase):
