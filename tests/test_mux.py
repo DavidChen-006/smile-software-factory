@@ -4,6 +4,7 @@ Every window lives in one dedicated session, smile-test-<pid>, killed in tearDow
 Run from the repo root: uv run python -m unittest tests.test_mux -v
 """
 
+import json
 import os
 import re
 import shutil
@@ -183,7 +184,7 @@ class HandleTest(MuxCase):
                 self.assertEqual((r.returncode, r.stdout), (2, b""), f"{verb} {handle}")
                 self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
                 self.assertNotIn(b"Traceback", r.stderr)
-                if handle.count(":") == 2 and not handle.startswith("tmux:"):
+                if handle.count(":") == 2 and handle.split(":")[0] not in ("tmux", "cmux", "herdr"):
                     self.assertIn(b"unknown backend", r.stderr, handle)
         self.assertEqual(mux(self.repo, "alive", control).returncode, 0, "a malformed handle touched a live window")
 
@@ -209,7 +210,7 @@ class BackendSelectionTest(MuxCase):
         self.assertTrue(self.spawn("auto", "/tmp", "sleep", "300").startswith("tmux:"))
 
     def test_config_naming_a_backend_without_a_file_exits_2(self) -> None:
-        for backend in ("screen", "cmux", "herdr"):
+        for backend in ("screen", "../lib/config", "TMUX"):
             set_config(self.repo, "backend", backend)
             r = mux(self.repo, "spawn", "n", "/tmp", "true")
             self.assertEqual((r.returncode, r.stdout), (2, b""), backend)
@@ -236,6 +237,97 @@ class BackendSelectionTest(MuxCase):
         self.assertEqual((r.returncode, r.stdout), (1, b""))
         self.assertIn(b"missing", r.stderr)
         self.assertEqual(len(r.stderr.splitlines()), 1)
+
+
+def probe(name: str) -> str:
+    """"" when the backend can be driven here, else the reason it cannot (contract section 14)."""
+    if not shutil.which(name):
+        return "not on PATH"
+    ask = {"cmux": ["cmux", "ping"], "herdr": ["herdr", "workspace", "list"]}.get(name)
+    if ask is None:
+        return ""
+    try:
+        proc = subprocess.run(ask, capture_output=True, check=False)
+    except OSError:
+        return "not on PATH"
+    return "" if proc.returncode == 0 else "server not answering"
+
+
+class VerbsCase(unittest.TestCase):
+    """The three verbs, once per backend. Subclasses set BACKEND; the matrix is built below."""
+
+    BACKEND = ""
+    repo: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        reason = probe(cls.BACKEND)
+        if reason:  # a backend we cannot drive is announced and not counted as a pass
+            print(f"skipped {cls.BACKEND} {reason}")
+            raise unittest.SkipTest(reason)
+        cls.repo = make_repo(f"smile-mux-{cls.BACKEND}")
+        cls.addClassCleanup(shutil.rmtree, os.path.dirname(cls.repo), ignore_errors=True)
+        if cls.BACKEND == "tmux":
+            cls.addClassCleanup(kill_session, SESSION)
+        if cls.BACKEND == "herdr":
+            cls.own_herdr_workspace()
+        set_config(cls.repo, "backend", cls.BACKEND)
+
+    @classmethod
+    def own_herdr_workspace(cls) -> None:
+        """Herdr panes are visible to the user, so the tests get a workspace of their own to fill."""
+        made = subprocess.run(["herdr", "workspace", "create", "--cwd", "/tmp", "--label",
+                               f"smile-test-{os.getpid()}", "--no-focus"], capture_output=True, check=False)
+        space = json.loads(made.stdout)["result"]["workspace"]["workspace_id"]
+        before = os.environ.get("HERDR_WORKSPACE_ID")
+        os.environ["HERDR_WORKSPACE_ID"] = space
+        cls.addClassCleanup(os.environ.__setitem__, "HERDR_WORKSPACE_ID", before or "")
+        cls.addClassCleanup(subprocess.run, ["herdr", "workspace", "close", space],
+                            capture_output=True, check=False)
+
+    def spawn(self, *args: str) -> str:
+        r = mux(self.repo, "spawn", *args)
+        self.assertEqual((r.returncode, r.stderr), (0, b""), r.stderr)
+        handle = r.stdout.decode()
+        self.assertTrue(handle.endswith("\n"), handle)
+        handle = handle[:-1]
+        self.addCleanup(mux, self.repo, "kill", handle)
+        self.assertTrue(handle.startswith(f"{self.BACKEND}:"), handle)
+        self.assertEqual(handle.split(), [handle], handle)
+        return handle
+
+    def test_spawn_then_alive_then_kill(self) -> None:
+        handle = self.spawn("sleeper", "/tmp", "sleep", "300")
+        self.assertEqual(mux(self.repo, "alive", handle).returncode, 0, handle)
+        for _ in range(2):  # kill is idempotent: already gone is the same end state
+            r = mux(self.repo, "kill", handle)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), handle)
+        wait_gone(self, self.repo, handle)
+
+    def test_alive_is_1_once_the_command_has_exited(self) -> None:
+        wait_gone(self, self.repo, self.spawn("quick", "/tmp", "true"))
+
+    def test_an_argument_with_a_space_reaches_the_command_intact(self) -> None:
+        out = os.path.join(self.repo, f"space-{self.BACKEND}.txt")
+        self.spawn("writer", self.repo, "sh", "-c", f'printf "%s" "$1" > {os.path.basename(out)}', "_", "a b")
+        for _ in range(100):
+            if os.path.exists(out):
+                break
+            time.sleep(0.1)
+        with open(out, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "a b")
+
+    def test_a_rest_this_backend_cannot_parse_is_malformed(self) -> None:
+        for verb in ("alive", "kill"):
+            r = mux(self.repo, verb, f"{self.BACKEND}:not-a-pane")
+            self.assertEqual((r.returncode, r.stdout), (2, b""), verb)
+            self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
+            self.assertNotIn(b"Traceback", r.stderr)
+
+
+for _backend in ("tmux", "cmux", "herdr"):
+    globals()[f"Verbs_{_backend}"] = type(f"Verbs_{_backend}", (VerbsCase,), {"BACKEND": _backend})
+del VerbsCase  # only the three concrete classes run; the template itself has no backend
 
 
 if __name__ == "__main__":
