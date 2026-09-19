@@ -24,18 +24,35 @@ carries `PR: #<n>` are the findings already raised on it; read them before judgi
 
 ## How to judge
 
-1. **Correctness.** Does the diff do what the bead and the frozen spec ask, and does it do it right?
-   Trace the real path, the failure paths, and the edges the tests do not cover.
-2. **Contract adherence.** Where a contract, schema, or interface is named, does the diff obey it
-   byte for byte? A deviation is blocking even when the code works.
-3. **Reader load.** How many layers must a cold reader trace, and how much state must they hold, to
-   answer "what does this do?" Name the specific heavy place, never a general complaint.
-4. **Tests.** Does each new assertion fail on wrong or empty output? A test that passes on nothing is
-   a finding.
+Two references carry the standard. Read both and apply the lenses that are relevant to this diff;
+not every lens applies to every change.
 
-Name each pstack principle that shaped a judgment by its name (`minimize-reader-load`,
-`laziness-protocol`, `prove-it-works`, `boundary-discipline`, `model-the-domain`,
-`sequence-verifiable-units`).
+- [`references/rubric.md`](references/rubric.md) — correctness, root causes versus symptoms,
+  structural integrity, verification, complexity budget, security. Principle name: `rubric`.
+- [`references/code-quality-review.md`](references/code-quality-review.md) — the code-quality lens
+  applied on top of the rubric: structural simplification, spaghetti growth, boundary and type
+  cleanliness, the canonical layer, the approval bar. Principle name: `code-quality-review`.
+
+Two things the rubric leaves to this lane, and both are blocking on their own:
+
+- **Contract adherence.** Where a contract, a schema, or an interface is named, the diff obeys it
+  byte for byte. A deviation is blocking even when the code works.
+- **Spec fit.** A diff that builds something the frozen spec does not ask for is a finding.
+
+When you find a potential bug, trace the execution path. Do not flag "this could be nil"; show the
+call chain that makes it nil. Name the specific heavy place, never a general complaint.
+
+## Lead judgment, before the verdict
+
+You are also the lead. Before you write the verdict, run your own findings through
+[`references/lead-judgment.md`](references/lead-judgment.md) — principle name: `lead-judgment` — and
+filter rather than aggregate. Drop the hypothetical that the call chain rules out, the premature
+abstraction, and the "I would have done it differently". Keep the finding that names a concrete
+execution path, and be slower to drop a correctness or security finding than any other kind. If your
+blocking list runs past five lines, you are not filtering hard enough.
+
+Name each principle that shaped a judgment by the name given above, plus any principle the worker's
+skill names (`laziness-protocol`, `test-behavior`) that the diff violated or satisfied.
 
 ## How to answer
 
