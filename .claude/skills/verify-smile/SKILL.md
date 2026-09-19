@@ -46,10 +46,19 @@ from each entry point's PEP 723 header, so the machine's `python3` is not a prer
    would, then runs `smile init`. `--from <checkout>` picks what to stamp; the default is the
    checkout this skill lives in, so a spike branch stamps itself.
 3. `seed --beads <n>` creates the beads. `--deps <id>` blocks the new beads on that one, which is
-   how the loop's ordering behavior is set up.
+   how the loop's ordering behavior is set up. `--title <text>` and `--description <text>` replace
+   the throwaway title and give the bead a real work order, which is what a real worker needs; both
+   apply to every bead the call creates, so a dogfood bead is seeded one call at a time.
 
 Two fixtures can run side by side. Each has its own repo, temp dir, tmux session, and manifest.
 Never drive a fixture this skill did not create.
+
+**Pin `--run` whenever another fixture might be alive.** A verb with no `--run` resolves the newest
+run, which is whichever fixture came up last on this machine, not necessarily yours. Two agents
+driving at once, and the second one's `up` silently steals every later unpinned call: its ticks run
+in your fixture, its events land in your log, and your reads answer for its world. Capture the
+`runid` that `up` printed and pass `--run <runid>` on every verb of the drive, including `doctor`,
+`events`, and `down`. Every page below writes the primitives without it for brevity; add it.
 
 ## Doctor
 
@@ -67,7 +76,8 @@ If any check fails, run `down` on that run and start a new one. Do not repair a 
 Compose the primitives the map page names. The full list is in the usage; the ones that change the
 world:
 
-	verify-smile tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>]
+	verify-smile tick [--worker real] [--reviewer real] [--reviewer-changes-once]
+	                  [--worker-crash <bead>] [--worker-sleep <s>]
 	verify-smile review <n> [--reviewer stub|real|<argv...>]
 	verify-smile gate <status|all|none|auto|bead <id> on|off>
 	verify-smile close-bead <id>
@@ -94,6 +104,12 @@ The two stubs under `scripts/` let a run exercise the lane without spending mode
 - `stub-reviewer` replaces the headless reviewer, prompt on stdin. It prints `Verdict: APPROVE`.
   With `--reviewer-changes-once` it prints `Verdict: REQUEST CHANGES` and one `- [Critical]`
   finding the first time it sees a PR, then approves.
+
+`tick --worker real` drops `SMILE_WORKER_CMD` so the driver spawns its own `claude -p` in the pane,
+and `tick --reviewer real` drops `SMILE_REVIEW_CMD` so every review that tick runs uses the
+signed-in `claude -p`. Either flag runs the whole tick under the caller's real `HOME`, because the
+scratch one is not signed in; `GH_TOKEN` and `GH_CONFIG_DIR` still ride the fixture tmux session, so
+the pushes and pull requests land on the fixture repo and nothing else. Expect minutes per bead.
 
 `review <n>` is one `smile review <n>` on one pull request, which is the only way to choose the
 reviewer. `--reviewer real` runs the signed-in `claude -p` with the user's real `HOME` for that

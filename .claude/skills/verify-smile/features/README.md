@@ -18,7 +18,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 ## Driving conventions
 
 - Every primitive prints JSON on stdout: one object, or one object per line for a listing. Read the JSON, never a prose summary.
-- Every primitive takes `--run <runid>` and uses the newest run when it is left out. `<verb> --help` prints its own usage.
+- Every primitive takes `--run <runid>` and uses the newest run when it is left out. `<verb> --help` prints its own usage. The recipes on these pages leave `--run` off for brevity; pass it on every call of a real drive. Newest-run resolution means another fixture coming up mid-drive captures every later unpinned call, and the drive then reports on a world that is not yours.
 - Only `doctor` decides pass or fail. Every other verb reports what happened, including a non-zero tick exit, and leaves the judgment to you.
 - `tick` is one `smile run --once` with the stub worker and stub reviewer wired in. Drive a multi-step behavior by ticking until the end state appears, not by sleeping a fixed time.
 - Read state from `prs`, `issues`, `events`, `runs`, `panes`, and `trust`. Never from the driver's stdout.
