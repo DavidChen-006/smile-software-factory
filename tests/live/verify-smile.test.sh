@@ -8,7 +8,7 @@
 # .claude/skills/verify-smile/features/, and a verifier composes these verbs to produce it.
 set -uo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 VS="$ROOT/.claude/skills/verify-smile/scripts/verify-smile"
 EVIDENCE_ROOT="${SMILE_VERIFY_ROOT:-$HOME/.smile-verify}"
 RUNIDS=""

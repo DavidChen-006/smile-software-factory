@@ -28,6 +28,12 @@ def make_repo(name: str = "smile-core") -> str:
     subprocess.run(["git", "init", "-q", path], check=True)
     subprocess.run(["git", "-C", path, "config", "user.email", "test@localhost"], check=True)
     subprocess.run(["git", "-C", path, "config", "user.name", "test"], check=True)
+    # `smile init` runs `bd init`, which installs git hooks; bd's pre-push hook reaches the network
+    # and costs seconds per push on a good day and minutes during a GitHub outage. Unit tests are
+    # offline, so point every scratch repo's hooks at an empty directory. Worktrees inherit it.
+    hooks = os.path.join(parent, "no-hooks")
+    os.mkdir(hooks)
+    subprocess.run(["git", "-C", path, "config", "core.hooksPath", hooks], check=True)
     subprocess.run(["uv", "run", str(ROOT / "install.py"), path], check=True, stdout=subprocess.DEVNULL)
     return path
 
