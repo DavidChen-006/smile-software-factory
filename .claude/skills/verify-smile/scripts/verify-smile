@@ -231,19 +231,24 @@ cmd_stamp() {
 }
 
 # ---------------------------------------------------------------- seed
-SEED_HELP='verify-smile seed --beads <n> [--deps <bead-id>] [--run <runid>]
+SEED_HELP='verify-smile seed --beads <n> [--deps <bead-id>] [--title <text>] [--description <text>]
+                   [--run <runid>]
 
 Create n beads in the fixture. --deps blocks every new bead on that bead, which is how the loop
-order behaviour (bd hides blocked beads) is set up.
+order behaviour (bd hides blocked beads) is set up. --title and --description replace the throwaway
+title and give the bead a real order; both are applied to every bead this call creates, so a dogfood
+bead is seeded one call at a time.
 
 Prints one object: runid, beads (the new ids, in creation order), ready (what `bd ready` lists now).'
 
 cmd_seed() {
-	local n="" deps=""
+	local n="" deps="" title="" description=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--beads) need_value "$1" "${2:-}"; n="$2"; shift ;;
 			--deps) need_value "$1" "${2:-}"; deps="$2"; shift ;;
+			--title) need_value "$1" "${2:-}"; title="$2"; shift ;;
+			--description) need_value "$1" "${2:-}"; description="$2"; shift ;;
 			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
 			*) die "unknown flag $1; see 'verify-smile seed --help'" ;;
 		esac
@@ -252,13 +257,19 @@ cmd_seed() {
 	case "$n" in ''|*[!0-9]*) die "seed needs --beads <n> with n a positive integer" ;; esac
 	[ "$n" -gt 0 ] || die "seed needs --beads <n> with n a positive integer"
 	resolve_run; require_up
-	local i=1 id new="" all ready
+	local i=1 id new="" all ready text args
 	while [ "$i" -le "$n" ]; do
-		if [ -n "$deps" ]; then
-			id=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd create "bead $i: add a file, after $deps" --deps "$deps" --silent)
+		args=()
+		if [ -n "$title" ]; then
+			text="$title"
+		elif [ -n "$deps" ]; then
+			text="bead $i: add a file, after $deps"
 		else
-			id=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd create "bead $i: add a file" --silent)
+			text="bead $i: add a file"
 		fi
+		[ -n "$description" ] && args+=(--description "$description")
+		[ -n "$deps" ] && args+=(--deps "$deps")
+		id=$(cd "$FIXTURE" && BD_NON_INTERACTIVE=1 bd create "$text" ${args[@]+"${args[@]}"} --silent)
 		new="$new $id"
 		i=$((i + 1))
 	done
@@ -344,6 +355,26 @@ drive() {
 		"$WORLD_SMILE" "$@"
 }
 
+# tick_drive <args...>: `drive` for one tick, shaped by --worker real and --reviewer real. A real
+# agent is the signed-in `claude`, so either real flag drops the scratch HOME and runs the drive
+# under the caller's own; the fixture account still rides GH_TOKEN and GH_CONFIG_DIR, and the
+# watchtower stays a stub. SMILE_WORKER_CMD is unset, not emptied, so the driver uses its own argv.
+tick_drive() {
+	local envs=(GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1
+		GH_TOKEN="$WORLD_TOKEN" SMILE_MUX_SESSION="$WORLD_SESSION"
+		SMILE_WATCHTOWER_CMD="$WORLD_WATCHTOWER" SMILE_STUB_CHANGES_ONCE="${WORLD_CHANGES_ONCE:-0}")
+	if [ "${WORLD_REAL_WORKER:-0}" != 1 ] && [ "${WORLD_REAL_REVIEWER:-0}" != 1 ]; then
+		envs+=(HOME="$WORLD_HOME")
+	fi
+	[ "${WORLD_REAL_WORKER:-0}" = 1 ] || envs+=(SMILE_WORKER_CMD="$WORLD_WORKER")
+	if [ "${WORLD_REAL_REVIEWER:-0}" = 1 ]; then
+		envs+=(SMILE_REVIEW_CMD="")
+	else
+		envs+=(SMILE_REVIEW_CMD="$WORLD_REVIEW_CMD")
+	fi
+	env -u SMILE_WORKER_CMD "${envs[@]}" "$WORLD_SMILE" "$@"
+}
+
 # stub_env <session> <sleep> <crash beads> <crash times> <changes once>: shape the stubs for one
 # drive. A pane inherits the tmux SERVER's environment, not the driver's, so these must be set on
 # the session or --worker-crash and --worker-sleep are silent no-ops.
@@ -355,14 +386,22 @@ stub_env() {
 }
 
 # ---------------------------------------------------------------- tick
-TICK_HELP='verify-smile tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>] [--run <runid>]
+TICK_HELP='verify-smile tick [--worker real] [--reviewer real] [--reviewer-changes-once]
+                   [--worker-crash <bead>] [--worker-sleep <s>] [--run <runid>]
 
 One `smile run --once` in the fixture, with the stub worker and the stub reviewer wired in through
 the run scratch-HOME wrapper. The flags shape the stubs for this tick only:
 
+  --worker real             no SMILE_WORKER_CMD, so the driver launches its own `claude -p` argv
+  --reviewer real           every review this tick runs uses the signed-in `claude -p`
   --reviewer-changes-once   the stub reviewer answers REQUEST CHANGES the first time it sees a PR
   --worker-crash <bead>     the stub worker exits 3 for that bead instead of working
   --worker-sleep <s>        the stub worker sleeps s seconds first, so its pane stays alive
+
+Either real flag runs the whole tick with the caller REAL HOME, because the scratch HOME is not
+signed in; GH_TOKEN and GH_CONFIG_DIR still ride the fixture tmux session, so a real worker pushes
+and opens pull requests on the fixture repo and nothing else, and the trust edit lands in the real
+.claude.json under that HOME for the fixture worktree paths. The watchtower stays a stub either way.
 
 Prints one object: runid, exit (the tick exit code), events (the event objects appended during it).
 A non-zero exit is reported in the JSON, not as a failure: a tick that hits a gh hiccup is normal
@@ -371,6 +410,12 @@ and the next tick re-reads the world.'
 cmd_tick() {
 	while [ $# -gt 0 ]; do
 		case "$1" in
+			--worker) need_value "$1" "${2:-}"
+				[ "$2" = real ] || die "tick --worker takes only 'real'"
+				WORLD_REAL_WORKER=1; shift ;;
+			--reviewer) need_value "$1" "${2:-}"
+				[ "$2" = real ] || die "tick --reviewer takes only 'real'; 'verify-smile review' takes an argv"
+				WORLD_REAL_REVIEWER=1; shift ;;
 			--reviewer-changes-once) WORLD_CHANGES_ONCE=1 ;;
 			--worker-crash) need_value "$1" "${2:-}"; WORLD_CRASH_BEADS="$2"; WORLD_CRASH_TIMES=99; shift ;;
 			--worker-sleep) need_value "$1" "${2:-}"; WORLD_SLEEP="$2"; shift ;;
@@ -386,7 +431,7 @@ cmd_tick() {
 	# the stub shape rides the session environment, which is what a pane actually inherits
 	stub_env "$WORLD_SESSION" "${WORLD_SLEEP:-0}" "${WORLD_CRASH_BEADS:-}" \
 		"${WORLD_CRASH_TIMES:-1}" "${WORLD_CHANGES_ONCE:-0}"
-	drive run --once >>"$EVIDENCE_ROOT/$RUNID/tick.log" 2>&1 || rc=$?
+	tick_drive run --once >>"$EVIDENCE_ROOT/$RUNID/tick.log" 2>&1 || rc=$?
 	stub_env "$WORLD_SESSION" "" "" "" ""   # for this tick only: the next one shapes them again
 	appended=$(tail -n "+$((before + 1))" "$WORLD_LOG" 2>/dev/null | py -c '
 import json, sys
@@ -1102,9 +1147,10 @@ USAGE='verify-smile: composable primitives for driving the SMILE factory against
             gc [--dry-run]                  delete leftover smile-verify-*-trash repos
 
   Setup     stamp [--from <checkout>]       stamp SMILE into the fixture and smile init
-            seed --beads <n> [--deps <id>]  create beads
+            seed --beads <n> [--deps <id>] [--title <text>] [--description <text>]
 
-  Drive     tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>]
+  Drive     tick [--worker real] [--reviewer real] [--reviewer-changes-once]
+                 [--worker-crash <bead>] [--worker-sleep <s>]
             review <n> [--reviewer stub|real|<argv...>]
             gate <status|all|none|auto|bead <id> on|off>
             close-bead <id>
