@@ -4,7 +4,7 @@ backend:
 # Claude model the driver launches each worker with.
 worker.model: opus
 # Permission mode the worker runs under.
-worker.permission_mode: acceptEdits
+worker.permission_mode: bypassPermissions
 # Comma-separated models the review lane runs, one review per model.
 reviewer.models: opus
 # Most beads in flight at once.

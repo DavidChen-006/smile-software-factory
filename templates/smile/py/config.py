@@ -6,7 +6,7 @@ import re
 SCHEMA = {
     "backend": "",
     "worker.model": "opus",
-    "worker.permission_mode": "acceptEdits",
+    "worker.permission_mode": "bypassPermissions",
     "reviewer.models": "opus",
     "reviewer.timeout": "600",
     "max_parallel": "3",
