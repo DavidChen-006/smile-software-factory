@@ -40,6 +40,6 @@ Preconditions:
 
 - A handle is opaque. Never parse it in a recipe; pass it back unchanged. `kill-pane` exists so a verifier never has to read one out of a run file by hand.
 - The tmux backend must target the fixture session, not the user's own. `verify-smile` exports `SMILE_MUX_SESSION=smile-verify-<runid>` and kills only handles this run spawned. `down` owns the session itself.
-- The stub worker without `--worker-sleep` finishes in seconds, so its pane is usually already gone by the time you look. Use `--worker-sleep <s>` whenever a live pane is the thing under test.
+- The stub worker without `--worker-sleep` finishes in seconds, so its pane is usually already gone by the time you look. Use `--worker-sleep <s>` whenever a live pane is the thing under test. The flag reaches the worker through the fixture tmux session's environment, set for that tick and unset after, because a pane inherits the session's environment and not the driver's.
 - cmux and Herdr open visible panes on the user's screen, and their backend files land in S8. Until then a handle or a config naming them exits 2 with `unknown backend <name>`.
 - With the multiplexer off PATH every verb exits 1 with `smile mux: missing tmux not on PATH`. Exit 0 from `kill` means the pane is known to be gone, never that the tool could not be asked.

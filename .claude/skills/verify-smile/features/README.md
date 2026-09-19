@@ -11,6 +11,10 @@ This directory is the maintained source for verifying the user-facing behavior o
 - `verify-smile doctor` exits 0.
 - Never drive a fixture this run did not create.
 
+## Gotchas that apply to every page
+
+- The harness itself needs `python3` on PATH even though SMILE does not. SMILE's shim execs `uv run` and never asks for a system interpreter, but `verify-smile`'s own JSON shaping falls back to `uv run python` while the stub worker's issue lookup and the fake `gh` in `tests/` hard-code `#!/usr/bin/env python3`. On a machine with only `uv`, the fixture drives and SMILE passes, but the stub worker's fix round and the unit tests' fake GitHub do not run.
+
 ## Driving conventions
 
 - Every primitive prints JSON on stdout: one object, or one object per line for a listing. Read the JSON, never a prose summary.

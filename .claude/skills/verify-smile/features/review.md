@@ -8,7 +8,7 @@ Review is the lane that judges every open pull request at its head commit, turns
 - `review-changes` opens one issue labeled `review` per blocking finding and comments on the PR with the links.
 - `review-fix` moves the waiting run back under `.factory/runs/`, respawns the worker for a fix round, and re-reviews the new head with the issue thread in the prompt.
 - `review-approve` closes the open findings, squash-merges, and closes the bead.
-- `review-real` runs the real headless reviewer and records a non-empty verdict detail.
+- `review-real` runs the real headless reviewer and records a `review.started` whose `detail` is a model name, never `custom`.
 - `review-manual` reviews one PR by hand with `smile review <pr>`.
 
 ## How to get to it (user POV)
@@ -29,8 +29,8 @@ Preconditions:
 - **Fix round.** The respawned stub worker reads the open `review` issue naming its PR, pushes a `fix: address review` commit with an `addresses #<issue>` line, and exits. Give GitHub a few seconds; its commit list lags a push.
 - **Approve and merge.** `verify-smile tick --reviewer-changes-once` again. The new head has no verdict, so the lane reviews it, finds the stub now approving, closes the issue, merges, and closes the bead: `review.started`, `issue.resolved`, `review.verdict` (`APPROVE`), `pr.merged`, `bead.closed`.
 - **Reap.** One more `verify-smile tick` logs `pane.reaped` and `campaign.complete`.
-- **Real reviewer.** Not reachable through `tick`, which always wires the stub. Drive it by hand: set `SMILE_REVIEW_CMD` empty and run `smile review <pr>` in the fixture with the signed-in `claude` on PATH. Expect minutes and real tokens. Pass when a `review.verdict` for the bead carries a non-empty `detail`; what it decides is its own business.
-- **Manual review.** `verify-smile time review <pr> --n 1` runs `smile review <pr>` once through the shim and prints its exit and stdout. A bead with no waiting run spawns nothing on `REQUEST CHANGES`, which is why the lane is normally driven through ticks.
+- **Real reviewer.** `verify-smile review <pr> --reviewer real`. It runs `smile review <pr>` with no `SMILE_REVIEW_CMD`, so the lane launches `claude -p --model <first reviewer.models> --permission-mode plan` itself, and it runs that call with the user's real `HOME`, because the run's scratch HOME is not signed in and every attempt there fails on sight. Expect minutes and real tokens. What it decides is its own business; what proves the real reviewer ran is the `review.started` `detail`.
+- **Manual review.** `verify-smile review <pr>` runs `smile review <pr>` with the stub and prints its exit, its stderr lines, the events it appended, and the path of the review file. `--reviewer <argv...>` runs any other command as the reviewer. A bead with no waiting run spawns nothing on `REQUEST CHANGES`, which is why the lane is normally driven through ticks.
 
 ## Evidence that proves it
 
@@ -42,7 +42,8 @@ Preconditions:
 - `verify-smile issues`: exactly one issue whose `pr` is that PR number, `"state": "CLOSED"`, none left `OPEN`.
 - The PR carries a comment naming the issue URL (`gh pr view <n> --json comments`).
 - The bead is `closed` in `beads.json` in the evidence directory, or from `verify-smile close-bead`'s read-back shape.
-- `<fixture>/.factory/reviews/<pr>-<sha>.md` holds the full review text for each verdict, one file per head SHA, and lands in the evidence directory as `factory/reviews/`.
+- `<fixture>/.factory/reviews/<pr>-<sha>.md` holds the full review text for each verdict, one file per head SHA, and lands in the evidence directory as `factory/reviews/`. A review that named no verdict leaves `<pr>-<sha>.failed.md` instead, holding what the reviewer printed; `verify-smile review` prints whichever of the two it wrote.
+- For `review-real`: the `review.started` line for that call, with `detail` equal to a model name (for example `opus`). A `detail` of `custom` is the stub and proves nothing about the real reviewer.
 
 ## Gotchas
 
@@ -51,5 +52,7 @@ Preconditions:
 - The stub reviewer's counter lives under `.factory/stub/`, keyed by PR number, so `--reviewer-changes-once` requests changes once per PR, not once per fixture. A second fixture starts clean.
 - Pass `--reviewer-changes-once` on every tick of the round. It shapes the stub for that tick only; dropping it mid-round makes the first review of a later PR an approve.
 - The worker only wakes for a fix round because `smile review` moved `.factory/runs/waiting/<bead>.json` back and respawned it. Reviewing a PR by hand with no waiting run spawns nothing.
-- `review.started`'s `detail` is `custom` whenever `SMILE_REVIEW_CMD` is set, which it always is under `tick`. A `detail` naming a model means the real reviewer ran.
+- `review.started`'s `detail` is `custom` whenever `SMILE_REVIEW_CMD` is set, which it always is under `tick` and under `review` with the stub. A real review is proved only by a `review.started` whose `detail` is a model name (`opus`, say); `custom` never proves it, however long the call took.
+- A real review that answers `REQUEST CHANGES` starts a fix round, which spawns a pane and writes a trust entry into the `HOME` that call ran under, and for `--reviewer real` that is the real home. Drive it on a pull request you expect to be approved, or after the round is over.
+- `review <n>` refuses a pull request that is not `OPEN`, and refuses a second review of the same pull request while one is running: both are one stderr line, exit 1, and nothing logged.
 - A tick that exits non-zero because a review named no verdict is normal: nothing is logged and the next tick reviews the same head again.

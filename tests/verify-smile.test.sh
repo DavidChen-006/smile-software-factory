@@ -156,6 +156,9 @@ BEAD_C=$("$VS" seed --beads 1 --run "$RUNID" 2>/dev/null | jq_ 'd["beads"][0]')
 "$VS" tick --worker-sleep 90 --run "$RUNID" >/dev/null 2>&1
 eq "the slow worker's bead is live" "$("$VS" runs --run "$RUNID" | jq_ 'len(d["live"])')" "1"
 eq "its pane is a new window" "$("$VS" panes --run "$RUNID" | jl 'len(rows)')" "$((BASE_PANES + 1))"
+sleep 20   # the stub worker finishes in seconds; a pane still up after this really did sleep
+eq "--worker-sleep kept the pane alive well past the tick" \
+	"$("$VS" panes --run "$RUNID" | jl 'len(rows)')" "$((BASE_PANES + 1))"
 KP=$("$VS" kill-pane "$BEAD_C" --run "$RUNID" 2>/dev/null)
 printf 'kill-pane: %s\n' "$KP"
 eq "kill-pane exits 0" "$(printf '%s' "$KP" | jq_ 'd["exit"]')" "0"
@@ -169,6 +172,78 @@ eq "the window count is back" "$("$VS" panes --run "$RUNID" | jl 'len(rows)')" "
 CB=$("$VS" close-bead "$BEAD_C" --run "$RUNID" 2>/dev/null)
 eq "close-bead reads the status back as closed" "$(printf '%s' "$CB" | jq_ 'd["status"]')" "closed"
 check "close-bead refuses an unknown bead" test "$("$VS" close-bead sv-nope --run "$RUNID" >/dev/null 2>&1; echo $?)" -ne 0
+
+# ---------------------------------------------------------------- no secret under the evidence dir
+TOKEN=$(gh auth token 2>/dev/null || printf 'no-token-available')
+eq "the gh token is nowhere under the evidence directory" \
+	"$(grep -rlF "$TOKEN" "$EVIDENCE_ROOT/$RUNID" 2>/dev/null | wc -l | tr -d ' ')" "0"
+eq "the wrapper files name no token variable" \
+	"$(grep -lE 'GH_TOKEN' "$EVIDENCE_ROOT/$RUNID/home/worker-env" "$EVIDENCE_ROOT/$RUNID/home/reviewer-env" 2>/dev/null | wc -l | tr -d ' ')" "0"
+eq "the token rides the fixture session's environment instead" \
+	"$(tmux show-environment -t "=$SESSION" GH_TOKEN >/dev/null 2>&1 && printf yes || printf no)" "yes"
+
+# ---------------------------------------------------------------- kill-pane with no run file
+KPE=$("$VS" kill-pane sv-nosuch --run "$RUNID" 2>/dev/null); KPE_RC=$?
+eq "kill-pane without a run file exits 1" "$KPE_RC" "1"
+eq "kill-pane without a run file prints an error object on stdout" \
+	"$(printf '%s' "$KPE" | jq_ '"error" in d')" "True"
+
+# ---------------------------------------------------------------- crash and escalation
+BEAD_D=$("$VS" seed --beads 1 --run "$RUNID" 2>/dev/null | jq_ 'd["beads"][0]')
+"$VS" tick --worker-crash "$BEAD_D" --run "$RUNID" >/dev/null 2>&1
+CRASH1=$("$VS" tick --worker-crash "$BEAD_D" --run "$RUNID" 2>/dev/null)
+eq "--worker-crash makes the driver see a crash" \
+	"$(printf '%s' "$CRASH1" | jq_ 'sum(1 for e in d["events"] if e["event"]=="worker.crashed" and e["detail"]=="attempt 1" and e["bead"]==a)' "$BEAD_D")" "1"
+eq "the crash is respawned, not reclaimed" \
+	"$(printf '%s' "$CRASH1" | jq_ 'sum(1 for e in d["events"] if e["event"]=="bead.claimed" and e["bead"]==a)' "$BEAD_D")" "0"
+CRASH2=$("$VS" tick --worker-crash "$BEAD_D" --run "$RUNID" 2>/dev/null)
+eq "the second crash escalates" \
+	"$(printf '%s' "$CRASH2" | jq_ 'sum(1 for e in d["events"] if e["event"]=="worker.crashed" and e["detail"]=="escalated" and e["bead"]==a)' "$BEAD_D")" "1"
+eq "the escalated run file is filed under crashed" \
+	"$("$VS" runs --run "$RUNID" | jq_ 'sum(1 for r in d["crashed"] if r.get("bead")==a)' "$BEAD_D")" "1"
+
+# ---------------------------------------------------------------- review: lock, cap, hand merge
+BEAD_E=$("$VS" seed --beads 1 --run "$RUNID" 2>/dev/null | jq_ 'd["beads"][0]')
+"$VS" tick --run "$RUNID" >/dev/null 2>&1
+PR_E=""
+for _ in 1 2 3 4 5 6 7 8; do
+	PR_E=$("$VS" prs --run "$RUNID" | jl '([str(r["number"]) for r in rows if r["bead"]==a and r["state"]=="OPEN"] or [""])[0]' "$BEAD_E")
+	[ -n "$PR_E" ] && break
+	sleep 5
+done
+eq "the new bead opened a pull request" "$(test -n "$PR_E" && printf yes || printf no)" "yes"
+
+# a review killed mid-run leaves this path registered; the lane must reclaim it, not wedge
+git -C "$FIXTURE" worktree add --detach "$FIXTURE/.factory/review/$PR_E" HEAD >/dev/null 2>&1
+REV1=$("$VS" review "$PR_E" --reviewer /usr/bin/false --run "$RUNID" 2>/dev/null)
+eq "a failing reviewer is exit 1" "$(printf '%s' "$REV1" | jq_ 'd["exit"]')" "1"
+eq "the stale review worktree did not wedge the pull request" \
+	"$(printf '%s' "$REV1" | jq_ 'sum(1 for e in d["events"] if e["event"]=="review.started")')" "1"
+eq "a failed review is kept under reviews/ as .failed.md" \
+	"$(printf '%s' "$REV1" | jq_ 'd["review"].endswith(".failed.md")')" "True"
+"$VS" review "$PR_E" --reviewer /usr/bin/false --run "$RUNID" >/dev/null 2>&1
+"$VS" review "$PR_E" --reviewer /usr/bin/false --run "$RUNID" >/dev/null 2>&1
+CAP=$("$VS" tick --run "$RUNID" 2>/dev/null)
+eq "three failed reviews stop the driver reviewing that head" \
+	"$(printf '%s' "$CAP" | jq_ 'sum(1 for e in d["events"] if e["event"]=="review.started")')" "0"
+eq "the capped head is escalated once" \
+	"$(printf '%s' "$CAP" | jq_ 'sum(1 for e in d["events"] if e["event"]=="watch.escalation" and e["detail"]=="review failed 3 times")')" "1"
+eq "ticking again does not escalate twice" \
+	"$("$VS" tick --run "$RUNID" 2>/dev/null | jq_ 'sum(1 for e in d["events"] if e["event"]=="watch.escalation")')" "0"
+
+(cd "$FIXTURE" && gh pr merge "$PR_E" --squash --delete-branch >/dev/null 2>&1)
+MERGED=$("$VS" tick --run "$RUNID" 2>/dev/null)
+eq "a hand-merged pull request closes its bead" \
+	"$(printf '%s' "$MERGED" | jq_ 'sum(1 for e in d["events"] if e["event"]=="bead.closed" and e["bead"]==a)' "$BEAD_E")" "1"
+eq "a hand-merged pull request is never a crash" \
+	"$(printf '%s' "$MERGED" | jq_ 'sum(1 for e in d["events"] if e["event"]=="worker.crashed" and e["bead"]==a)' "$BEAD_E")" "0"
+eq "pr.merged names the merge commit GitHub reports" \
+	"$(printf '%s' "$MERGED" | jq_ '([e["sha"] for e in d["events"] if e["event"]=="pr.merged"] or [""])[0]')" \
+	"$("$VS" prs --run "$RUNID" | jl '([r["mergeCommit"] for r in rows if str(r["number"])==a] or [""])[0]' "$PR_E")"
+
+REVC=$("$VS" review "$PR_E" --run "$RUNID" 2>/dev/null); REVC_RC=$?
+eq "review refuses a pull request that is not open" "$REVC_RC" "1"
+eq "a refused review logs nothing" "$(printf '%s' "$REVC" | jq_ 'len(d["events"])')" "0"
 
 # ---------------------------------------------------------------- gate and time
 eq "gate status prints the mode" \

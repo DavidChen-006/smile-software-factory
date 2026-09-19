@@ -68,6 +68,7 @@ Compose the primitives the map page names. The full list is in the usage; the on
 world:
 
 	verify-smile tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>]
+	verify-smile review <n> [--reviewer stub|real|<argv...>]
 	verify-smile gate <status|all|none|auto|bead <id> on|off>
 	verify-smile close-bead <id>
 	verify-smile kill-pane <bead>
@@ -94,9 +95,10 @@ The two stubs under `scripts/` let a run exercise the lane without spending mode
   With `--reviewer-changes-once` it prints `Verdict: REQUEST CHANGES` and one `- [Critical]`
   finding the first time it sees a PR, then approves.
 
-The real headless reviewer is not reachable through `tick`, which always wires the stub. Drive it
-by hand with `smile review <pr>` in the fixture and no `SMILE_REVIEW_CMD`. Expect minutes and real
-tokens; see [features/review.md](features/review.md).
+`review <n>` is one `smile review <n>` on one pull request, which is the only way to choose the
+reviewer. `--reviewer real` runs the signed-in `claude -p` with the user's real `HOME` for that
+subprocess, because the run's scratch HOME is not signed in and every attempt there fails. Expect
+minutes and real tokens; see [features/review.md](features/review.md).
 
 ## Evidence
 

@@ -35,7 +35,7 @@ Preconditions:
 
 - `verify-smile gate status` printing exactly `{"argv": ["status"], "exit": 0, "stdout": ["mode all"]}`; no bead lines for a repo-wide hold.
 - `verify-smile prs` for the held PR: `"state": "OPEN"`, `"labels": ["smile:approved"]`, `"mergedAt": null`, at a point where `verify-smile events --bead <id>` already holds a `review.verdict` with `detail` `APPROVE`.
-- The absence of `pr.merged` in that bead's events while the PR is held, and its presence afterwards with `"actor": "human"` and the merge commit in `sha`.
+- The absence of `pr.merged` in that bead's events while the PR is held, and its presence afterwards with `"actor": "human"` and a `sha` equal to the `mergeCommit` that `verify-smile prs` reports for that pull request.
 - The bead's sequence ending `review.verdict pr.merged bead.closed pane.reaped`, with no `pr.merged` between the verdict and the human's `gh pr merge`.
 - `<factory>/gate.json` in the evidence directory's `factory/`, compact with sorted keys, holding the mode and the gated bead ids.
 
@@ -44,5 +44,5 @@ Preconditions:
 - The mode is read at verdict time. Changing it mid-loop applies to the next verdict, not to a pull request already labeled.
 - A held pull request that a person closes without merging leaves the bead claimed. That is the expected escalation path, not a bug: the close path only fires on `mergedAt`.
 - An absent `gate.json` means mode `auto` with no beads, and `smile gate status` never creates it. A missing file is not a missing feature.
-- The driver finds the human's merge by listing closed pull requests that carry `smile:approved`. A person who strips that label before merging leaves the bead open.
+- The driver finds the human's merge by listing merged factory pull requests, whatever labels they carry: stripping `smile:approved` before merging still closes the bead. What `smile audit` then reports is a merge with no `APPROVE` verdict at its head.
 - `verify-smile gate` runs in the run world, so it writes the same `gate.json` the ticks read. Setting the mode with a bare `smile gate` in another shell works too, but only if it resolves the same factory directory.

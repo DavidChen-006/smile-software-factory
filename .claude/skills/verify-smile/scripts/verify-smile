@@ -3,7 +3,7 @@
 #
 # Fixture lifecycle    up | doctor | list | down [--dry-run] | gc [--dry-run]
 # Setup                stamp | seed --beads <n>
-# Drive                tick | gate | close-bead | kill-pane | time
+# Drive                tick | review | gate | close-bead | kill-pane | time
 # Observe              events | runs | panes | prs | issues | trust | evidence
 #
 # Every verb takes --run <runid> and uses the newest run when it is left out. Every verb prints
@@ -278,8 +278,13 @@ cmd_seed() {
 # and treehouse pools its worktrees under $HOME. gh and git keep the real config through
 # GH_CONFIG_DIR and GIT_CONFIG_GLOBAL, plus GIT_CONFIG_NOSYSTEM=1, because the Xcode command-line
 # tools put `credential.helper = osxkeychain` in the SYSTEM config, and a scratch home has no login
-# keychain. GH_TOKEN answers the gh credential helper; it is read here, while HOME is still the real
-# one, and never written to disk.
+# keychain.
+#
+# GH_TOKEN answers the gh credential helper. No secret is ever written under the evidence directory,
+# which survives `down`, so the token reaches a pane only through the fixture tmux session's own
+# environment (`tmux set-environment`), which dies with the session, and reaches every process this
+# script spawns through that process's environment. The wrapper files carry HOME and git settings
+# and nothing else.
 world_up() {
 	local git_name git_email
 	WORLD_SMILE="$FIXTURE/smile/smile"
@@ -295,6 +300,8 @@ world_up() {
 	mkdir -p "$WORLD_HOME"
 	printf '[credential]\n\thelper = !gh auth git-credential\n[user]\n\tname = %s\n\temail = %s\n' \
 		"$git_name" "$git_email" > "$WORLD_GIT_CFG"
+	session_env "$WORLD_SESSION" GH_TOKEN "$WORLD_TOKEN"
+	session_env "$WORLD_SESSION" GH_CONFIG_DIR "$WORLD_GH_CFG"
 	world_wrapper "$WORLD_HOME/worker-env" "$SCRIPT_DIR/stub-worker"
 	world_wrapper "$WORLD_HOME/reviewer-env" "$SCRIPT_DIR/stub-reviewer"
 	WORLD_WORKER="$WORLD_HOME/worker-env"
@@ -302,14 +309,24 @@ world_up() {
 	WORLD_LOG="$FIXTURE/.factory/events.jsonl"
 }
 
+# session_env <session> <name> <value>: set one variable in the tmux session's own environment,
+# which every pane the driver opens in it inherits. An empty value unsets it.
+session_env() {
+	if [ -n "${3:-}" ]; then
+		tmux set-environment -t "=$1" "$2" "$3"
+	else
+		tmux set-environment -t "=$1" -u "$2" 2>/dev/null || true
+	fi
+}
+
 # world_wrapper <path> <target>: a wrapper that re-enters the scratch world and execs the stub. A
 # pane inherits the multiplexer session's environment, not the driver's, and `smile review` hands
-# the reviewer its own environment, so both stubs are entered through one of these.
+# the reviewer its own environment, so both stubs are entered through one of these. It carries no
+# secret: GH_TOKEN and GH_CONFIG_DIR ride the session environment or the spawning process's own.
 world_wrapper() {
 	cat > "$1" <<WRAPEOF
 #!/bin/sh
 export HOME="$WORLD_HOME" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1
-export GH_CONFIG_DIR="$WORLD_GH_CFG" GH_TOKEN="$WORLD_TOKEN"
 exec "$2" "\$@"
 WRAPEOF
 	chmod +x "$1"
@@ -319,11 +336,19 @@ WRAPEOF
 drive() {
 	env HOME="$WORLD_HOME" GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" \
 		GH_TOKEN="$WORLD_TOKEN" GIT_CONFIG_NOSYSTEM=1 SMILE_MUX_SESSION="$WORLD_SESSION" \
-		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="$WORLD_REVIEW_CMD" \
+		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="${WORLD_REVIEW_CMD}" \
 		SMILE_STUB_CHANGES_ONCE="${WORLD_CHANGES_ONCE:-0}" \
-		SMILE_STUB_CRASH_BEADS="${WORLD_CRASH_BEADS:-}" SMILE_STUB_CRASH_TIMES="${WORLD_CRASH_TIMES:-1}" \
-		SMILE_STUB_SLEEP="${WORLD_SLEEP:-0}" \
 		"$WORLD_SMILE" "$@"
+}
+
+# stub_env <session> <sleep> <crash beads> <crash times> <changes once>: shape the stubs for one
+# drive. A pane inherits the tmux SERVER's environment, not the driver's, so these must be set on
+# the session or --worker-crash and --worker-sleep are silent no-ops.
+stub_env() {
+	session_env "$1" SMILE_STUB_SLEEP "$2"
+	session_env "$1" SMILE_STUB_CRASH_BEADS "$3"
+	session_env "$1" SMILE_STUB_CRASH_TIMES "$4"
+	session_env "$1" SMILE_STUB_CHANGES_ONCE "$5"
 }
 
 # ---------------------------------------------------------------- tick
@@ -355,11 +380,79 @@ cmd_tick() {
 	world_up
 	local before rc=0 appended
 	before=$(wc -l < "$WORLD_LOG" 2>/dev/null | tr -d ' ' || printf '0')
+	# the stub shape rides the session environment, which is what a pane actually inherits
+	stub_env "$WORLD_SESSION" "${WORLD_SLEEP:-0}" "${WORLD_CRASH_BEADS:-}" \
+		"${WORLD_CRASH_TIMES:-1}" "${WORLD_CHANGES_ONCE:-0}"
 	drive run --once >>"$EVIDENCE_ROOT/$RUNID/tick.log" 2>&1 || rc=$?
+	stub_env "$WORLD_SESSION" "" "" "" ""   # for this tick only: the next one shapes them again
 	appended=$(tail -n "+$((before + 1))" "$WORLD_LOG" 2>/dev/null | py -c '
 import json, sys
 print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')
 	jout runid "$RUNID" exit# "$rc" events# "$appended"
+}
+
+# ---------------------------------------------------------------- review
+REVIEW_HELP='verify-smile review <n> [--reviewer stub|real|<argv...>] [--run <runid>]
+
+One `smile review <n>` in the fixture, the lane'"'"'s own entry point, with the reviewer chosen:
+
+  --reviewer stub          the stub reviewer (the default), the same one `tick` wires
+  --reviewer real          the signed-in `claude -p`, with the REAL HOME for that subprocess only,
+                           because the scratch HOME is not signed in and every attempt would fail
+  --reviewer <argv...>     any command; everything after the flag is the argv
+
+Prints one object: runid, pr, reviewer, exit, stderr (its lines), events (appended during the call),
+and review (the path of reviews/<n>-<sha>.md, or the .failed.md when the review named no verdict).'
+
+cmd_review() {
+	local pr="" mode="stub" argv=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--reviewer)
+				need_value "$1" "${2:-}"; shift
+				case "$1" in
+					stub|real) mode="$1"; shift ;;
+					*) mode="argv"; while [ $# -gt 0 ] && [ "$1" != "--run" ]; do argv+=("$1"); shift; done ;;
+				esac
+				continue ;;
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			-*) die "unknown flag $1; see 'verify-smile review --help'" ;;
+			*) pr="$1" ;;
+		esac
+		shift
+	done
+	case "$pr" in ''|*[!0-9]*) die "review needs a pull request number; 'verify-smile prs' lists them" ;; esac
+	resolve_run; require_up; require_stamped
+	world_up
+	local before rc=0 appended errf found
+	before=$(wc -l < "$WORLD_LOG" 2>/dev/null | tr -d ' ' || printf '0')
+	errf="$EVIDENCE_ROOT/$RUNID/review-$pr.stderr"
+	case "$mode" in
+		real) drive_real review "$pr" >>"$EVIDENCE_ROOT/$RUNID/review.log" 2>"$errf" || rc=$? ;;
+		*)
+			[ "$mode" = "stub" ] || WORLD_REVIEW_CMD="${argv[*]}"
+			drive review "$pr" >>"$EVIDENCE_ROOT/$RUNID/review.log" 2>"$errf" || rc=$? ;;
+	esac
+	appended=$(tail -n "+$((before + 1))" "$WORLD_LOG" 2>/dev/null | py -c '
+import json, sys
+print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')
+	found=$(py -c '
+import glob, os, sys
+hits = sorted(glob.glob(os.path.join(sys.argv[1], ".factory", "reviews", sys.argv[2] + "-*.md")),
+              key=os.path.getmtime)
+print(hits[-1] if hits else "")' "$FIXTURE" "$pr")
+	jout runid "$RUNID" pr "$pr" reviewer "$mode" exit# "$rc" \
+		stderr# "$(py -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read().splitlines()))' "$errf")" \
+		events# "$appended" review "$found"
+}
+
+# drive_real <args...>: `drive`, but with the user'"'"'s real HOME and gh config for this one
+# subprocess. The real reviewer is the signed-in `claude`, and the scratch HOME is not signed in.
+drive_real() {
+	env GH_CONFIG_DIR="$WORLD_GH_CFG" GIT_CONFIG_GLOBAL="$WORLD_GIT_CFG" GIT_CONFIG_NOSYSTEM=1 \
+		GH_TOKEN="$WORLD_TOKEN" SMILE_MUX_SESSION="$WORLD_SESSION" \
+		SMILE_WORKER_CMD="$WORLD_WORKER" SMILE_REVIEW_CMD="" \
+		"$WORLD_SMILE" "$@"
 }
 
 # ---------------------------------------------------------------- events
@@ -459,8 +552,10 @@ for line in sys.stdin:
 PRS_HELP='verify-smile prs [--run <runid>]
 
 Every pull request on the fixture repo, any state, one object per line: number, state, branch,
-bead (from the `Bead:` trailer, null when it carries none), labels, mergedAt. This is GitHub'"'"'s
-own answer, which is what proves a merge; the driver saying it merged is not proof.'
+bead (from the `Bead:` trailer, null when it carries none), labels, mergedAt, mergeCommit (the
+merge commit SHA, null until it lands). This is GitHub'"'"'s own answer, which is what proves a
+merge; the driver saying it merged is not proof, and `mergeCommit` is what a `pr.merged` sha is
+checked against.'
 
 cmd_prs() {
 	while [ $# -gt 0 ]; do
@@ -471,14 +566,15 @@ cmd_prs() {
 		shift
 	done
 	resolve_run
-	(cd "$FIXTURE" && gh pr list --state all --limit 100 --json number,state,headRefName,body,labels,mergedAt) | py -c '
+	(cd "$FIXTURE" && gh pr list --state all --limit 100 --json number,state,headRefName,body,labels,mergedAt,mergeCommit) | py -c '
 import json, sys
 for pr in sorted(json.load(sys.stdin), key=lambda p: p["number"]):
     beads = [l.strip()[6:] for l in pr["body"].splitlines() if l.strip().startswith("Bead: ")]
     print(json.dumps({"number": pr["number"], "state": pr["state"],
                       "branch": pr["headRefName"], "bead": beads[-1] if beads else None,
                       "labels": [l["name"] for l in pr["labels"]],
-                      "mergedAt": pr["mergedAt"]}))'
+                      "mergedAt": pr["mergedAt"],
+                      "mergeCommit": (pr.get("mergeCommit") or {}).get("oid")}))'
 }
 
 # ---------------------------------------------------------------- issues
@@ -563,7 +659,10 @@ KILLPANE_HELP='verify-smile kill-pane <bead> [--run <runid>]
 
 Kill the pane the driver spawned for that bead, through `smile mux kill` with the handle from the
 bead'"'"'s run state file. This is how a crash is staged: a pane that dies with its bead still open
-is what the driver reaps as `worker.crashed`. Prints one object: bead, handle, exit.'
+is what the driver reaps as `worker.crashed`. Prints one object: bead, handle, exit.
+
+A bead with no live or waiting run state file has no pane to kill: that prints one object carrying
+an `error` key on stdout and exits 1, so a script reads the refusal as JSON like every other answer.'
 
 cmd_kill_pane() {
 	local bead=""
@@ -587,7 +686,11 @@ for d in (base, base + "/waiting"):
     if os.path.isfile(p):
         print(json.load(open(p))["handle"])
         break' "$FIXTURE" "$bead")
-	[ -n "$handle" ] || die "no live or waiting run state file for bead $bead; 'verify-smile runs' lists them"
+	if [ -z "$handle" ]; then
+		jout runid "$RUNID" bead "$bead" \
+			error "no live or waiting run state file for bead $bead; 'verify-smile runs' lists them"
+		exit 1
+	fi
 	drive mux kill "$handle" || rc=$?
 	jout runid "$RUNID" bead "$bead" handle "$handle" exit# "$rc"
 }
@@ -860,6 +963,9 @@ cmd_down_inner() {
 	local killed=false removed=false
 	if [ -n "$session" ] && tmux has-session -t "=$session" 2>/dev/null; then
 		log "killing tmux session $session"
+		# the token lives only in this session's environment; drop it before the kill, so a kill
+		# that somehow fails still leaves no secret behind
+		session_env "$session" GH_TOKEN ""
 		tmux kill-session -t "=$session"
 		killed=true
 	fi
@@ -955,6 +1061,7 @@ USAGE='verify-smile: composable primitives for driving the SMILE factory against
             seed --beads <n> [--deps <id>]  create beads
 
   Drive     tick [--reviewer-changes-once] [--worker-crash <bead>] [--worker-sleep <s>]
+            review <n> [--reviewer stub|real|<argv...>]
             gate <status|all|none|auto|bead <id> on|off>
             close-bead <id>
             kill-pane <bead>
@@ -989,6 +1096,7 @@ case "$VERB" in
 	stamp)      helped "$STAMP_HELP" "$@";    cmd_stamp "$@" ;;
 	seed)       helped "$SEED_HELP" "$@";     cmd_seed "$@" ;;
 	tick)       helped "$TICK_HELP" "$@";     cmd_tick "$@" ;;
+	review)     helped "$REVIEW_HELP" "$@";  cmd_review "$@" ;;
 	events)     helped "$EVENTS_HELP" "$@";   cmd_events "$@" ;;
 	runs)       helped "$RUNS_HELP" "$@";     cmd_runs "$@" ;;
 	panes)      helped "$PANES_HELP" "$@";    cmd_panes "$@" ;;
