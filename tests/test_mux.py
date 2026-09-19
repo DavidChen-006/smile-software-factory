@@ -239,6 +239,27 @@ class BackendSelectionTest(MuxCase):
         self.assertEqual(len(r.stderr.splitlines()), 1)
 
 
+class HerdrKillCase(unittest.TestCase):
+    """The section 15 ruling: `kill` under Herdr fails when no server answers. No server is needed to
+    prove it — pointing HERDR_SOCKET_PATH at a path nothing listens on is exactly "no server"."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not shutil.which("herdr"):
+            print("skipped herdr not on PATH")
+            raise unittest.SkipTest("not on PATH")
+        cls.repo = make_repo("smile-mux-herdr-kill")
+        cls.addClassCleanup(shutil.rmtree, os.path.dirname(cls.repo), ignore_errors=True)
+
+    def test_kill_with_no_server_answering_exits_1(self) -> None:
+        r = smile(self.repo, "mux", "kill", "herdr:w0:p1",
+                  env={"HERDR_SOCKET_PATH": "/nonexistent/smile-no-herdr.sock",
+                       "SMILE_MUX_SESSION": SESSION})
+        self.assertEqual((r.returncode, r.stdout), (1, b""), r.stderr)
+        self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
+        self.assertNotIn(b"Traceback", r.stderr)
+
+
 def probe(name: str) -> str:
     """"" when the backend can be driven here, else the reason it cannot (contract section 14)."""
     if not shutil.which(name):

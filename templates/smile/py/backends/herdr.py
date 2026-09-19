@@ -95,5 +95,9 @@ def alive(rest: str) -> bool:
 
 
 def kill(rest: str) -> None:
-    """A pane Herdr no longer knows is already the end state; only a dead server is a failure."""
-    herdr(["pane", "close", parts(rest)])
+    """A pane Herdr no longer knows is already the end state; anything else, a dead server above all,
+    is a failure: a kill that quietly did nothing would leave the driver believing a pane is gone."""
+    code, body = herdr(["pane", "close", parts(rest)])
+    error = body.get("error", {})
+    if code != 0 and error.get("code") != "pane_not_found":
+        raise RuntimeError(f"herdr refused: {error.get('message', 'no output')}")

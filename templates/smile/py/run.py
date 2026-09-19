@@ -392,13 +392,16 @@ class Driver:
                 f"SMILE_BASE_BRANCH={self.base_branch}", *self.worker(order)]
 
     def worker(self, order: str) -> list:
-        """The worker argv: SMILE_WORKER_CMD plus the order path, else claude with the order text."""
+        """The worker argv: SMILE_WORKER_CMD plus the order path, else claude with the order text.
+
+        Print mode (`-p`) is not cosmetic: an interactive `claude` never exits, so its pane would
+        never die and the driver would never see the worker finish."""
         override = os.environ.get("SMILE_WORKER_CMD")
         if override:
             return [*override.split(), order]
         with open(order, encoding="utf-8") as f:
             text = f.read()
-        return ["claude", "--model", config.get(self.root, "worker.model"),
+        return ["claude", "-p", "--model", config.get(self.root, "worker.model"),
                 "--permission-mode", config.get(self.root, "worker.permission_mode"), text]
 
     def complete(self) -> bool:

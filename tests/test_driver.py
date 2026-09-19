@@ -427,7 +427,8 @@ class ClaimTest(DriverCase):
         for call in spawns:
             argv = pane_argv(call)
             order = self.runs()[f"{pane_env(call)['SMILE_BEAD']}.json"]["order"]
-            self.assertEqual(argv[5:-1], ["claude", "--model", "opus", "--permission-mode", "acceptEdits"])
+            self.assertEqual(argv[5:-1], ["claude", "-p", "--model", "opus",
+                                          "--permission-mode", "acceptEdits"])
             self.assertEqual(argv[-1], Path(order).read_text())
 
     def test_the_worktree_is_trusted_and_other_keys_survive(self) -> None:
