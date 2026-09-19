@@ -4,7 +4,7 @@
 # Fixture lifecycle    up | doctor | list | down [--dry-run] | gc [--dry-run]
 # Setup                stamp | seed --beads <n>
 # Drive                tick | review | gate | close-bead | kill-pane | time
-# Observe              events | runs | panes | prs | issues | trust | evidence
+# Observe              events | narrate | runs | panes | prs | issues | trust | evidence
 #
 # Every verb takes --run <runid> and uses the newest run when it is left out. Every verb prints
 # JSON on stdout: one object, or one object per line for a listing. A failure is one line on
@@ -489,6 +489,32 @@ for line in list(open(sys.argv[1]))[since:]:
     if bead and o.get("bead") != bead:
         continue
     print(json.dumps(o))' "$logf" "$bead" "$since"
+}
+
+# ---------------------------------------------------------------- narrate
+NARRATE_HELP='verify-smile narrate [--run <runid>]
+
+One `smile narrate` in the fixture: the events appended since the last call, escalations first.
+
+Prints one object: runid, exit, lines (its stdout lines), cursor (the content of
+.factory/narrate.cursor after the call, empty when the file is absent).'
+
+cmd_narrate() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--run) need_value "$1" "${2:-}"; RUNID="$2"; shift ;;
+			*) die "unknown flag $1; see 'verify-smile narrate --help'" ;;
+		esac
+		shift
+	done
+	resolve_run; require_up; require_stamped
+	world_up
+	local rc=0 outf
+	outf="$EVIDENCE_ROOT/$RUNID/narrate.out"
+	drive narrate >"$outf" 2>>"$EVIDENCE_ROOT/$RUNID/narrate.log" || rc=$?
+	jout runid "$RUNID" exit# "$rc" \
+		lines# "$(py -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read().splitlines()))' "$outf")" \
+		cursor "$(cat "$FIXTURE/.factory/narrate.cursor" 2>/dev/null || printf '')"
 }
 
 # ---------------------------------------------------------------- runs
@@ -1085,7 +1111,7 @@ USAGE='verify-smile: composable primitives for driving the SMILE factory against
             kill-pane <bead>
             time <smile args...> [--n <runs>]
 
-  Observe   events [--bead <id>] [--since <n>]
+  Observe   events [--bead <id>] [--since <n>] | narrate
             runs | panes | prs | issues | trust | evidence
 
 Every verb takes --run <runid> and uses the newest run when it is left out, prints JSON on stdout,
@@ -1116,6 +1142,7 @@ case "$VERB" in
 	tick)       helped "$TICK_HELP" "$@";     cmd_tick "$@" ;;
 	review)     helped "$REVIEW_HELP" "$@";  cmd_review "$@" ;;
 	events)     helped "$EVENTS_HELP" "$@";   cmd_events "$@" ;;
+	narrate)    helped "$NARRATE_HELP" "$@";  cmd_narrate "$@" ;;
 	runs)       helped "$RUNS_HELP" "$@";     cmd_runs "$@" ;;
 	panes)      helped "$PANES_HELP" "$@";    cmd_panes "$@" ;;
 	prs)        helped "$PRS_HELP" "$@";      cmd_prs "$@" ;;
