@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.test_core import make_repo, set_config, smile
+from tests.test_core import make_repo, set_config, smile, smile_inproc
 from tests.test_driver import FAKE_TMUX, WORKER, bd, bd_json, seed, write_exec
 
 SESSION = f"s4py-{os.getpid()}"
@@ -134,8 +134,6 @@ class ReviewCase(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = make_repo("smile-rev", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
-        init = smile(self.repo, "init")
-        self.assertEqual(init.returncode, 0, init.stderr)
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "stamp")
         git(self.repo, "branch", "-M", "main")
@@ -213,10 +211,10 @@ class ReviewCase(unittest.TestCase):
 
     # ------------------------------------------------------------ driving
     def review(self, *args: str, **env: str) -> subprocess.CompletedProcess:
-        return smile(self.repo, "review", *(args or ("1",)), env={**self.env, **env})
+        return smile_inproc(self.repo, "review", *(args or ("1",)), env={**self.env, **env})
 
     def tick(self, **env: str) -> subprocess.CompletedProcess:
-        return smile(self.repo, "run", "--once", env={**self.env, **env})
+        return smile_inproc(self.repo, "run", "--once", env={**self.env, **env})
 
     def records(self) -> list:
         path = Path(self.repo, ".factory/events.jsonl")
@@ -269,6 +267,21 @@ class ReviewCase(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (1, b""), r.stderr)
         self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
         self.assertNotIn(b"Traceback", r.stderr)
+
+
+class ShimTest(ReviewCase):
+    """The two things the in-process tests do not cover: the shim's dispatch and `init` on a live repo."""
+
+    def test_init_on_an_initialised_repo(self) -> None:
+        r = smile(self.repo, "init")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.decode(), "".join(f"exists {t}\n" for t in (
+            ".beads", "treehouse.toml", ".worktreeinclude", ".factory", ".factory/events.jsonl")))
+
+    def test_review_through_the_shim(self) -> None:
+        r = smile(self.repo, "review", "1", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("review.verdict", self.names())
 
 
 class VerdictTest(ReviewCase):
@@ -564,7 +577,7 @@ class GateTest(ReviewCase):
         bd(self.repo, "update", self.bead, "--status", "open")
 
     def gate(self, *args: str) -> subprocess.CompletedProcess:
-        return smile(self.repo, "gate", *args, env=self.env)
+        return smile_inproc(self.repo, "gate", *args, env=self.env)
 
     def test_the_gate_matrix_decides_label_versus_merge(self) -> None:
         cases = [  # (mode, bead held, PR labels, merge config, gated)
@@ -629,7 +642,7 @@ class GateTest(ReviewCase):
 
 class AuditTest(ReviewCase):
     def audit(self, *args: str) -> subprocess.CompletedProcess:
-        return smile(self.repo, "audit", *args, env=self.env)
+        return smile_inproc(self.repo, "audit", *args, env=self.env)
 
     def test_audit_lists_merged_pull_requests_with_no_approve_at_their_head(self) -> None:
         self.write_data({"prs": {
