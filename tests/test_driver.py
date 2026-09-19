@@ -241,7 +241,8 @@ class ShimTest(DriverCase):
     def test_tick_through_the_shim(self) -> None:
         r = self.run_driver_shim("--once")
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""), r.stderr)
-        self.assertEqual([e for e, _, _ in self.events()], ["campaign.start", "campaign.complete"])
+        names = [e for e, _, _ in self.events()]  # dispatch only: the tick's own events are asserted in-process
+        self.assertEqual((names[0], names[-1]), ("campaign.start", "campaign.complete"), names)
 
 
 class SingletonTest(DriverCase):
