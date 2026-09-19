@@ -21,6 +21,13 @@ Run everything through the helper. Its usage prints with no arguments.
 State for one run is one manifest at `~/.smile-verify/<runid>/manifest.json`. Set
 `SMILE_VERIFY_ROOT` to move that directory.
 
+Prerequisites on the driving machine: `uv`, `git`, `gh` logged in, `bd`, `treehouse`, and `tmux`.
+The fixture never runs the runtime directly. It runs it the way a user does, through the stamped
+shim `<fixture>/smile/smile`, which execs `uv run` on `smile/py/smile.py`; the installer and the
+`tests/*-py.test.sh` wrappers go through `uv run` too. uv picks the interpreter from each entry
+point's PEP 723 header, so the machine's `python3` is not a prerequisite and no run pins a
+Python version.
+
 ## Launch
 
 `verify-smile up` builds a fixture and prints `fixture ready <runid> <path>`.
@@ -31,7 +38,7 @@ State for one run is one manifest at `~/.smile-verify/<runid>/manifest.json`. Se
 3. Runs `BD_NON_INTERACTIVE=1 bd init --prefix sv`, then seeds two beads. Bead B depends on bead A,
    so `bd ready --json` lists only A. Their ids are in the manifest as `bead_a` and `bead_b`.
 4. Opens a detached tmux session named `smile-verify-<runid>` rooted at the fixture.
-5. Stamps SMILE with `python3 <smile-repo>/install.py <fixture>` when that file exists. The
+5. Stamps SMILE with `uv run <smile-repo>/install.py <fixture>` when that file exists. The
    smile repo is the checkout this skill lives in, so a spike branch is what gets stamped.
    Until S1 lands there is no `install.py` and the manifest records `install: skipped`.
 

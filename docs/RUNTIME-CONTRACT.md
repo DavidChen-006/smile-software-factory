@@ -13,7 +13,7 @@ Where `docs/SPEC.md` and the S1 brief differ, the brief is more specific and thi
 1. With no arguments it prints `usage: smile <command> [args...]` to stderr and exits 1.
 2. It resolves the repo root by walking up from the shim's directory; it stops at the first directory that contains `smile.config.yaml` or a `.git` entry (file or directory). If that directory has no `smile.config.yaml`, exit 2 with a one-line stderr message. The shim is run by its stamped path `smile/smile`; invoking it through a symlink is unsupported.
 3. It exports `SMILE_ROOT=<repo root>` (absolute, no trailing slash) for the runtime.
-4. It execs `python3 "$SMILE_ROOT/smile/py/smile.py" <command> "$@"`. The runtime runs on the `python3` PATH finds; its floor is Python 3.9 (the macOS system interpreter), so every module starts with `from __future__ import annotations` and uses no 3.10+ construct. `smile.py` must exist, else stderr error and exit 2. Unknown commands are the runtime's job: print a one-line error to stderr and exit 2.
+4. It execs `uv run "$SMILE_ROOT/smile/py/smile.py" <command> "$@"`. When `uv` is not on PATH the shim prints exactly one stderr line, `smile: uv is not on PATH`, and exits 2. `smile.py` must exist, else stderr error and exit 2. Unknown commands are the runtime's job: print a one-line error to stderr and exit 2.
 5. A command name containing `/` or starting with `.` is rejected with exit 2, so `smile lib/events` cannot run a library file.
 
 Rules for the runtime that follow from this:
@@ -21,6 +21,21 @@ Rules for the runtime that follow from this:
 - The runtime is `smile/py/smile.py` as the dispatcher plus modules beside it. It runs with the stdlib only. Subcommands (`smile config get`, `smile mux spawn`) are arguments to the command.
 - Every command reads `SMILE_ROOT` from the environment and never recomputes it. Every path below is relative to `$SMILE_ROOT`.
 - The runtime shells out to `git`, `gh`, `bd`, and `treehouse`; it never imports their internals.
+
+### Interpreter
+
+uv owns the interpreter. The machine's `python3` is not a prerequisite and is never consulted.
+
+Every entry-point script carries PEP 723 inline script metadata as its first lines: the shebang `#!/usr/bin/env -S uv run`, then
+
+	# /// script
+	# requires-python = ">=3.12"
+	# dependencies = []
+	# ///
+
+SMILE has no third-party dependencies, so `dependencies` is the empty list everywhere. The entry points are `smile/py/smile.py` and `install.py`; the other modules under `smile/py/` are imported by `smile.py` and carry no header. `requires-python` is `>=3.12`, so modules may use 3.12 syntax freely. There is no Python 3.9 floor and no `from __future__ import annotations` requirement.
+
+The runtime is tested once, on the interpreter uv resolves from `requires-python`. There is no second pass. The tests run through `uv run` too: each `tests/<name>-py.test.sh` runs `uv run python -m unittest tests.test_<name>`, so the test interpreter is chosen by the same rule as the runtime's.
 
 ## 2. Config
 
@@ -82,7 +97,7 @@ Every command reads `SMILE_ROOT` from the environment. Stdout carries only the l
 
 | command | stdout | side effects | exit |
 | --- | --- | --- | --- |
-| `smile doctor` | One line per check, in this order: `git`, `gh`, `gh-auth`, `claude`, `bd`, `treehouse`, `mux`. Each line is `ok <tool>` or `missing <tool> <reason>`. The mux line names the backend picked: `ok mux tmux`. | None. Doctor is read-only; it never creates `.factory/` or touches bd. | 0 all ok; 1 any missing. |
+| `smile doctor` | Eight lines, one per check, in this order: `uv`, `git`, `gh`, `gh-auth`, `claude`, `bd`, `treehouse`, `mux`. Each line is `ok <tool>` or `missing <tool> <reason>`. The mux line names the backend picked: `ok mux tmux`. | None. Doctor is read-only; it never creates `.factory/` or touches bd. | 0 all ok; 1 any missing. |
 | `smile init` | One line per action, in this order: `.beads`, `treehouse.toml`, `.worktreeinclude`, `.factory`, `.factory/events.jsonl`. Each line is `created <thing>` or `exists <thing>`. | See Init below. Idempotent. | 0. |
 | `smile event <name> [bead=<id>] [pr=<n>] [sha=<s>] [actor=<a>] [detail=<text>]` | Nothing. | Appends one event line per section 3. Unset fields are `null`. | 0; 2 when `<name>` is not one of the seventeen, an argument is not `key=value` with one of the five keys, or `pr` is not an integer. |
 | `smile config get <key>` | The value followed by a newline; the default when the key is absent from the file; an empty line when the value is empty. | None. Prints nothing on exit 3. | 0; 2 when `<key>` is missing from the argument list; 3 when `<key>` is not in the schema table. |
@@ -94,6 +109,7 @@ Detail per command.
 
 **doctor.** A tool is `ok` when `command -v <tool>` finds it on PATH. Reasons for missing lines are one short phrase:
 
+	missing uv not on PATH
 	missing git not on PATH
 	missing gh not on PATH
 	missing gh-auth gh not on PATH            (when gh itself is missing)
@@ -104,7 +120,9 @@ Detail per command.
 	missing mux none of tmux, cmux, herdr on PATH
 	missing mux <backend> not on PATH         (config `backend` names one that is absent)
 
-The mux check honors `backend` from config: when set, only that backend is checked and the ok line is `ok mux <backend>`; when empty, the first of `tmux`, `cmux`, `herdr` on PATH is picked. A `backend` value outside `tmux`, `cmux`, `herdr` prints `missing mux unknown backend <value>`. Doctor prints all seven lines even after a failure; it does not stop early.
+The mux check honors `backend` from config: when set, only that backend is checked and the ok line is `ok mux <backend>`; when empty, the first of `tmux`, `cmux`, `herdr` on PATH is picked. A `backend` value outside `tmux`, `cmux`, `herdr` prints `missing mux unknown backend <value>`. Doctor prints all eight lines even after a failure; it does not stop early.
+
+`uv` is the first line because nothing else in SMILE runs without it: the shim, the runtime, the installer, and the tests all go through `uv run`. `python3` is not a prerequisite and doctor does not check for one; uv fetches whatever interpreter `requires-python` asks for.
 
 **init.** Each step creates its thing only when absent and prints `created <thing>` or `exists <thing>`.
 
@@ -150,7 +168,7 @@ When `bd init` or `treehouse init` fails, init prints one stderr line, exits 1, 
 
 ## 6. Installer
 
-`python3 install.py <target-repo> [--force]` at the SMILE repo root, stdlib only. It copies the `templates/` tree into the target, preserving relative paths and file modes, skipping `__pycache__/` and `.DS_Store`. One stdout line per file, sorted by path components: `stamped <path>` (new), `unchanged <path>` (byte-identical; mode re-applied), `drifted <path>, use --force` (differs, left alone), `replaced <path>` (differs, `--force`), or `drifted <path>, symlink` (the destination is a symlink; counted as drift even with `--force`, never written through). A template that is itself a symlink is skipped with one stderr line. Then one line for `.gitignore`: `appended .gitignore` when it added `.factory/`, `unchanged .gitignore` when the line was present. Exit 1 when any file drifted without `--force` or on an I/O error (one stderr line), 2 on usage error, else 0. It touches nothing outside the templates image plus `.gitignore`.
+`uv run install.py <target-repo> [--force]` at the SMILE repo root, stdlib only. `install.py` is an entry point, so it carries the PEP 723 header of the Interpreter note above (`#!/usr/bin/env -S uv run`, `requires-python = ">=3.12"`, `dependencies = []`). Being stdlib-only it still runs under a bare `python3` new enough to parse it, but `uv run install.py` is the documented form and the one every doc and script uses. It copies the `templates/` tree into the target, preserving relative paths and file modes, skipping `__pycache__/` and `.DS_Store`. One stdout line per file, sorted by path components: `stamped <path>` (new), `unchanged <path>` (byte-identical; mode re-applied), `drifted <path>, use --force` (differs, left alone), `replaced <path>` (differs, `--force`), or `drifted <path>, symlink` (the destination is a symlink; counted as drift even with `--force`, never written through). A template that is itself a symlink is skipped with one stderr line. Then one line for `.gitignore`: `appended .gitignore` when it added `.factory/`, `unchanged .gitignore` when the line was present. Exit 1 when any file drifted without `--force` or on an I/O error (one stderr line), 2 on usage error, else 0. It touches nothing outside the templates image plus `.gitignore`.
 
 The runtime writers add their files under `templates/smile/py/`; the installer picks them up with no change. Executable bits are taken from the file mode in the checkout, so `chmod +x` an entry script and commit the mode.
 

@@ -14,7 +14,7 @@ SMILE stamps a small CLI into a repo and drives its build loop from there. Three
 
 From the target repo, stamp the templates. `<smile-repo>` is this checkout.
 
-	python3 <smile-repo>/install.py <target-repo>
+	uv run <smile-repo>/install.py <target-repo>
 
 One line per file: `stamped`, `unchanged`, `drifted <path>, use --force`, or `replaced`. A drifted file is one the user edited after stamping; `--force` overwrites it. The installer also adds `.factory/` to the target's `.gitignore`.
 
@@ -22,7 +22,9 @@ One line per file: `stamped`, `unchanged`, `drifted <path>, use --force`, or `re
 
 	smile/smile doctor
 
-One line per prerequisite, `ok <tool>` or `missing <tool> <reason>`, for git, gh, gh-auth, claude, bd, treehouse, and mux (one of tmux, cmux, herdr). Exit 1 when anything is missing. Fix every `missing` line before init.
+Eight lines, one per prerequisite, `ok <tool>` or `missing <tool> <reason>`, for uv, git, gh, gh-auth, claude, bd, treehouse, and mux (one of tmux, cmux, herdr). Exit 1 when anything is missing. Fix every `missing` line before init.
+
+`uv` comes first because everything else runs through it: the shim execs `uv run` on the runtime, and the installer and the tests run the same way. uv fetches the interpreter named by each script's PEP 723 header, so the machine's own `python3` is not a prerequisite.
 
 ## Init
 
