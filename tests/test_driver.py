@@ -144,7 +144,7 @@ class DriverCase(unittest.TestCase):
     beads: tuple = ("alpha", "beta")
 
     def setUp(self) -> None:
-        self.repo = make_repo("smile-drv")
+        self.repo = make_repo("smile-drv", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
         init = smile(self.repo, "init")
         self.assertEqual(init.returncode, 0, init.stderr)

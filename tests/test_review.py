@@ -132,7 +132,7 @@ class ReviewCase(unittest.TestCase):
     """A stamped scratch repo with a real `origin`, one bead, one pushed branch, and a fake GitHub."""
 
     def setUp(self) -> None:
-        self.repo = make_repo("smile-rev")
+        self.repo = make_repo("smile-rev", init=True)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.repo), ignore_errors=True)
         init = smile(self.repo, "init")
         self.assertEqual(init.returncode, 0, init.stderr)
