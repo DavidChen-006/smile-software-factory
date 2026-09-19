@@ -11,6 +11,7 @@ SCHEMA = {
     "reviewer.timeout": "600",
     "max_parallel": "3",
     "watchtower": "on",
+    "watchtower.model": "opus",
     "merge": "auto",
     "base_branch": "main",
 }

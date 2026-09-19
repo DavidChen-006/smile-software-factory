@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# stub-watchtower: stands in for the claude watchtower pane in verification runs.
+#
+# The driver runs it as: stub-watchtower <order-path>
+#   cwd = the main checkout
+#   env = SMILE_REPO (main checkout), SMILE_BASE_BRANCH, SMILE_ACTOR=watchtower
+#
+# It implements the duties of contract section 11 deterministically: tail
+# $SMILE_REPO/.factory/events.jsonl from the end of the file at start, append one
+# `<ts> <event> <bead> <detail>` line (null fields as `-`) per new event to .factory/watch.md, and
+# on `worker.crashed` with detail `escalated` for bead X, once per bead, run
+# `smile event watch.escalation bead=X detail="crashed twice"` and then `smile pause`.
+# It never removes the pause file and never touches code, bd, or GitHub. Polls once a second and
+# runs until it is killed.
+set -uo pipefail
+
+: "${SMILE_REPO:?SMILE_REPO unset}"
+FACTORY="$SMILE_REPO/.factory"
+LOG="$FACTORY/events.jsonl"
+WATCH="$FACTORY/watch.md"
+SMILE="$SMILE_REPO/smile/smile"
+[ -x "$SMILE" ] || SMILE="smile"
+mkdir -p "$FACTORY"
+
+# Tail from the end of the log as it stands now: events already written are not this watch's.
+seen=0
+[ -f "$LOG" ] && seen=$(wc -l < "$LOG" | tr -d ' ')
+: >> "$WATCH"  # after the mark, so the file appearing means the watch is armed
+
+while :; do
+	[ -f "$LOG" ] || { sleep 1; continue; }
+	total=$(wc -l < "$LOG" | tr -d ' ')
+	if [ "$total" -gt "$seen" ]; then
+		tail -n "$((total - seen))" "$LOG" | while IFS= read -r line; do
+			printf '%s\n' "$line" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    r = json.loads(line)
+    print(" ".join(str(r.get(k) or "-") for k in ("ts", "event", "bead", "detail")))
+' >> "$WATCH"
+			bead=$(printf '%s\n' "$line" | python3 -c '
+import json, sys
+r = json.loads(sys.stdin.read() or "{}")
+print(r.get("bead") or "" if r.get("event") == "worker.crashed" and r.get("detail") == "escalated" else "")
+')
+			if [ -n "$bead" ] && [ ! -f "$FACTORY/stub-watch-escalated-$bead" ]; then
+				: > "$FACTORY/stub-watch-escalated-$bead"
+				# `smile event` leaves unset fields null (contract section 4), so the actor is passed.
+				"$SMILE" event watch.escalation "bead=$bead" "actor=${SMILE_ACTOR:-watchtower}" \
+					'detail=crashed twice' >/dev/null 2>&1
+				"$SMILE" pause >/dev/null 2>&1
+			fi
+		done
+		seen=$total
+	fi
+	sleep 1
+done
