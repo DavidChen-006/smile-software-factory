@@ -4,7 +4,7 @@ Doctor checks every prerequisite SMILE needs, prints one line per check, and exi
 
 ## Sub-features
 
-- `doctor-ok` prints seven lines in order, `ok git`, `ok gh`, `ok gh-auth`, `ok claude`, `ok bd`, `ok treehouse`, `ok mux <backend>`, and exits 0.
+- `doctor-ok` prints eight lines in order, `ok uv`, `ok git`, `ok gh`, `ok gh-auth`, `ok claude`, `ok bd`, `ok treehouse`, `ok mux <backend>`, and exits 0.
 - `doctor-missing` prints `missing <tool> <reason>` on the tool's line and exits 1 when a tool is absent or gh is logged out; the other lines still print.
 - `doctor-backend` names the backend it would pick when `backend` is unset, in the order tmux, cmux, herdr, and honors `backend` when set.
 
@@ -17,14 +17,16 @@ Doctor checks every prerequisite SMILE needs, prints one line per check, and exi
 
 Preconditions:
 
+- `uv` on PATH; the shim execs `uv run` on the runtime, so doctor cannot run without it.
 - A fixture with `install: stamped`.
 
-- **All present.** Run `verify-smile feature doctor`. The helper runs `<fixture>/smile/smile doctor` and asserts exit code `0` and exactly seven lines each starting with `ok `. It prints `PASS doctor` or `FAIL doctor: <reason>`.
+- **All present.** Run `verify-smile feature doctor`. The helper runs the runtime the way a user does, through the stamped shim `<fixture>/smile/smile doctor`, which goes through `uv run`, and asserts exit code `0` and exactly eight lines each starting with `ok `. It prints `PASS doctor` or `FAIL doctor: <reason>`.
 - **One missing.** Not driven live; `tests/test_core.py` proves the missing-tool lines, the backend variants, and the read-only rule against a PATH built from stubs.
 - **Proof.** `~/.smile-verify/<runid>/doctor.log` holds the transcript and the exit code.
 
 ## Gotchas
 
 - `gh auth status` writes to stderr. Assert the exit code, not stdout.
+- A PATH without `uv` fails before doctor's first line: the shim prints `smile: uv is not on PATH` and exits 2. That is a broken fixture, not a `missing uv` line.
 - Doctor must not create `.factory/` or touch bd. It is read-only.
 - The helper is read-only on the fixture: doctor takes no config edit.

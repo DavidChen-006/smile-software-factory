@@ -4,6 +4,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 ## Baseline preconditions
 
+- `uv`, `git`, `gh` logged in, `bd`, `treehouse`, and `tmux` are on PATH. Everything SMILE runs, the shim, the runtime, the installer, and the `tests/*-py.test.sh` wrappers, goes through `uv run`, which picks the interpreter from each entry point's PEP 723 header.
 - A fixture from `verify-smile up` is in state `up`. Its manifest is at `~/.smile-verify/<runid>/manifest.json`.
 - The fixture has beads A and B seeded, B blocked by A, and `bd ready --json` lists only A.
 - The tmux session `smile-verify-<runid>` exists.

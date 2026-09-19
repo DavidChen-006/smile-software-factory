@@ -53,7 +53,9 @@ The driver runs the reviewer headless with the normal signed-in Claude. The revi
 
 ### Prerequisites
 
-`smile doctor` refuses to run with a named reason when any of these is missing. git, gh with a logged-in account, claude, bd, treehouse, and at least one of tmux, cmux, or herdr.
+`smile doctor` refuses to run with a named reason when any of these is missing. uv, git, gh with a logged-in account, claude, bd, treehouse, and at least one of tmux, cmux, or herdr. Doctor prints eight lines, `uv` first.
+
+uv owns the interpreter. Every entry-point script, the runtime's `smile/py/smile.py` and the repo's `install.py`, carries PEP 723 inline script metadata with `requires-python = ">=3.12"` and `dependencies = []`, and runs through `uv run`, so uv chooses and fetches the interpreter and the machine's own python never matters. The shim execs `uv run`, and so do the tests. There is no Python version to install and no second test pass. `docs/RUNTIME-CONTRACT.md` is normative on this.
 
 ### What the installer stamps
 
@@ -159,16 +161,16 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Files.**
 
-- [ ] Create `templates/smile/smile`.
-- [ ] Create `templates/smile/py/smile.py` and the `smile/py/` package with the commands `doctor`, `init`, `status`, `pause`, `resume`, plus the events and config modules.
+- [ ] Create `templates/smile/smile`. It execs `uv run` on the runtime and exits 2 with `smile: uv is not on PATH` when uv is absent.
+- [ ] Create `templates/smile/py/smile.py`, carrying the PEP 723 header with `requires-python = ">=3.12"` and `dependencies = []`, and the `smile/py/` package with the commands `doctor`, `init`, `status`, `pause`, `resume`, plus the events and config modules. Only the entry point carries the header; the imported modules do not.
 - [ ] Create `templates/smile.config.yaml`, `templates/prompts/`, and `templates/.claude/skills/` placeholders.
-- [ ] Create `install.py` at the repo root and `.claude/skills/smile/SKILL.md`, the skill that runs it.
-- [ ] Create `tests/test_core.py`.
+- [ ] Create `install.py` at the repo root, carrying the same PEP 723 header, and `.claude/skills/smile/SKILL.md`, the skill that runs it.
+- [ ] Create `tests/test_core.py` and the wrapper `tests/core-py.test.sh`, which runs the suite once through `uv run python -m unittest tests.test_core`.
 
 **Build.**
 
 - [ ] `install.py <repo> [--force]` stamps the files listed in Design and refuses to overwrite a drifted file without the flag.
-- [ ] `smile doctor` checks each prerequisite and prints one line per check with `ok` or `missing <reason>`. Exit 1 on any missing.
+- [ ] `smile doctor` checks each prerequisite and prints one line per check with `ok` or `missing <reason>`, eight lines with `uv` first. Exit 1 on any missing.
 - [ ] `smile init` runs `bd init`, writes the treehouse config, writes `.worktreeinclude`, creates `.factory/`, and appends a `campaign.start` placeholder only when asked.
 - [ ] `lib/events` appends one JSON line with the schema in Design. Concurrent writers append whole lines.
 - [ ] `lib/config` reads `smile.config.yaml` and prints one key. Missing keys fall back to defaults named in the template.
@@ -176,12 +178,12 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **You see.**
 
-- [ ] `python3 install.py /tmp/x` prints one line per stamped file. A second run prints `unchanged` per file. Editing a stamped file and re-running prints `drifted, use --force`.
+- [ ] `uv run install.py /tmp/x` prints one line per stamped file. A second run prints `unchanged` per file. Editing a stamped file and re-running prints `drifted, use --force`.
 - [ ] `smile doctor` in a repo with everything installed prints all `ok` and exits 0.
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/test_core.py` covers install, drift refusal, force, doctor with a missing tool on PATH, events schema, config defaults, pause and resume. Run `python3 -m unittest tests.test_core`.
+- [ ] `tests/test_core.py` covers install, drift refusal, force, doctor with a missing tool on PATH, events schema, config defaults, pause and resume. Run `bash tests/core-py.test.sh`, which runs the suite once through `uv run`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -217,7 +219,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/test_mux.py` covers spawn, alive on a running and an exited command, kill, double kill, and a missing backend name. Run `python3 -m unittest tests.test_mux`.
+- [ ] `tests/test_mux.py` covers spawn, alive on a running and an exited command, kill, double kill, and a missing backend name. Run `bash tests/mux-py.test.sh`, which runs the suite once through `uv run`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -255,7 +257,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/test_driver.py` covers singleton refusal, pause skips claims, max_parallel cap, crash respawn once, and event order. bd and treehouse are real. The mux backend is a fake that records calls. Run `python3 -m unittest tests.test_driver`.
+- [ ] `tests/test_driver.py` covers singleton refusal, pause skips claims, max_parallel cap, crash respawn once, and event order. bd and treehouse are real. The mux backend is a fake that records calls. Run `bash tests/driver-py.test.sh`, which runs the suite once through `uv run`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -295,7 +297,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `tests/test_review.py` covers verdict parsing, the no-verdict-at-head filter, issue creation from findings, the human gate matrix, and audit. GitHub calls go through a recorded fake of `gh`. Run `python3 -m unittest tests.test_review`.
+- [ ] `tests/test_review.py` covers verdict parsing, the no-verdict-at-head filter, issue creation from findings, the human gate matrix, and audit. GitHub calls go through a recorded fake of `gh`. Run `bash tests/review-py.test.sh`, which runs the suite once through `uv run`.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -434,7 +436,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 **Verify, unit.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
-- [ ] `python3 -m unittest tests.test_mux` on this machine runs all three backends.
+- [ ] `bash tests/mux-py.test.sh` on this machine runs all three backends.
 
 **Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
 
@@ -497,6 +499,7 @@ Open questions each fork settles by running something before building on it. Ans
 - How to pre-trust a folder for a headless-launched claude so no trust prompt blocks a worker pane. Settled 2026-09-18. `~/.claude.json` holds `projects[<absolute path>].hasTrustDialogAccepted`. The driver sets it for each worktree path before spawning. The worker's permission mode is the config key `worker.permission_mode`, passed as `--permission-mode`.
 - The exact Herdr CLI commands to open, probe, and close a tab. Settled from `herdr 0.8.0 --help`, live JSON shape pending S8. `herdr tab create --cwd <path> --label <name> --no-focus` returns JSON with `tab_id`, `herdr pane run <pane_id> <command>` starts the command, `herdr pane get <pane_id>` probes, `herdr tab close <tab_id>` closes.
 - Whether `treehouse get` seeds `.worktreeinclude` files before the worker's first command. Open. The driver acquires with `treehouse get --lease --lease-holder <bead-id>`, which prints only the path, and releases with `treehouse return --force <path>`. Settled from `treehouse 2.0.1 --help`.
+- Which interpreter the runtime runs on. Settled 2026-09-18, after the Python 3.9 floor (the macOS system interpreter) forced every py test wrapper to run its suite twice, once on the ambient python and once on the floor. SMILE follows super-simple-software-factory's shape instead. Every entry-point script carries PEP 723 inline script metadata (`requires-python = ">=3.12"`, `dependencies = []`) and runs through `uv run`, so uv chooses and fetches the interpreter. The cost is one new prerequisite, `uv`, which `smile doctor` checks first. The benefit is one interpreter everywhere and one test pass per suite. This docs change lands before the code change; a code PR implements it against this wording.
 - Whether `gh pr merge --squash` on a private repo from a script needs a `--admin` flag when no branch protection exists. Open.
 - Whether the driver's per-tick pull request scan through `gh pr list --json` stays under the GitHub secondary rate limit at a 60 second interval with 8 open pull requests. Open.
 
