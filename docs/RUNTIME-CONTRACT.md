@@ -298,3 +298,15 @@ The watchtower is one long-lived pane per campaign that observes the event log a
 **Campaign skill.** `templates/.claude/skills/campaign/SKILL.md`, ported from `~/zasti/agent-skills/skills/campaign/SKILL.md`, keeps its planning steps (frozen spec required, bead graph gated past the user, beads created) and ends differently: it starts the driver as a background process from the main checkout, `nohup smile/smile run > .factory/driver.log 2>&1 &`, records the pid it printed in the session, and tells the session to call `smile narrate` on every wake and relay each printed line to the user, escalations first as printed. `smile narrate` is what the session calls; the skill never tails the log itself.
 
 **Evidence.** Three `smile narrate` calls across a loop, concatenated, equal the log rendered exactly once, in order except for the escalation-first rule within a call, with no line repeated and none missing; a call with no new events prints nothing and leaves the cursor byte-identical; the cursor after each call equals the byte length of the log consumed.
+
+## 13. Skills (S7)
+
+The skills stamped into a target repo under `templates/.claude/skills/` are the worker's, reviewer's, and planner's instructions. The runtime never reads them; `prompts/worker.md`, `prompts/reviewer.md`, and `prompts/watchtower.md` are what the lane renders, and each of those tells its agent which skill to load by name.
+
+**Set.** `smile-code-writer`, `smile-code-reviewer`, `architect`, `preflight`, `draftspec`, `grilling`, `test-writer`, `campaign` (S6), `watchtower` (S5). Their sources and the edits to each are the S7 section of `docs/SPEC.md`; that list is normative for content.
+
+**Shape.** Every `SKILL.md` starts with YAML frontmatter carrying `name` (equal to its directory name) and a `description` block, then a body. Referenced files live beside it in `references/` and are plain markdown. No skill mentions Cursor, Discord, cmux, a home-directory path, `Downloads`, or `openclaw`; `grep -rli "cursor\|discord\|Downloads\|openclaw\|/Users/" templates/.claude/skills` prints nothing. No Makefile rules, no scripts.
+
+**Prompts.** `prompts/worker.md` and `prompts/reviewer.md` require the agent to end with a line `Principles applied: <name>, <name>, ...` naming each principle it applied by the name the skill gives it, before the reviewer's verdict line (section 9 order). The reviewer skill's rubric names the principles; `none` is a valid value when nothing applied.
+
+**Unit check.** `tests/skills.test.sh`: every `templates/.claude/skills/*/SKILL.md` has the frontmatter above with `name` matching its directory; the forbidden-word grep prints nothing; both prompts contain the literal `Principles applied:`. Runs in under five seconds.
