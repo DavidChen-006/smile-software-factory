@@ -21,6 +21,7 @@ import config
 import events
 import gate
 import mux
+import narrate
 import review
 import run
 import worktree
@@ -215,6 +216,7 @@ COMMANDS = {
     "pause": cmd_pause,
     "resume": cmd_resume,
     "status": cmd_status,
+    "narrate": narrate.cmd_narrate,
     "mux": mux.cmd_mux,
     "run": run.cmd_run,
     "review": review.cmd_review,
