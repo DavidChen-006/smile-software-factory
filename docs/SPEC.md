@@ -8,13 +8,21 @@ One box is one unit of work. Every box names the evidence that checks it. A nest
 
 The program runs under the Orchestrate playbook in `.claude/skills/poteto-mode/playbooks/orchestrate.md`, adapted as the Program checklist below says. The orchestrator merges. David approves this document once and reviews the dogfood in S9.
 
-Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked, and the two kinds of box are checked by different people.
+
+A **Verify, unit** box is the builder's. The builder runs the named test command itself and pastes its output into the pull request. Builders no longer drive live features.
+
+A **Verify, live** box names a behaviour and the observable evidence that proves it. It is checked by a fresh verifier agent, not by the builder. The verifier reads the feature map page for that behaviour under `.claude/skills/verify-smile/features/`, brings up a fixture, composes the verify-smile primitives the page names, and pastes the evidence into the pull request before the cold review verdict is written. A live box is never satisfied by a script printing `PASS`. It is satisfied only by evidence a reader can check against the event sequences, run-file locations, pane counts, and pull request and issue states in `docs/RUNTIME-CONTRACT.md`, section 10 of which is normative on what counts as evidence.
 
 ## Design
 
 This section is the frozen design. Every spike implements a part of it. A spike that finds the design wrong stops and reports rather than quietly diverging.
 
 Both runtimes were built side by side through S2 and half of S3. On 2026-09-18 the owner chose Python, and the bash runtime was removed in the PR that carries this paragraph. Everything below names py files only. `docs/bakeoff.tsv` stays as the record of the measurements, and Appendix E records the decision.
+
+### How verification works
+
+Decided 2026-09-18, after S3 and during S4. The verification harness stopped being a set of canned `verify-smile feature <name>` scripts that each print `PASS`. A canned script is thin and gameable. Its `PASS` is one line a reader cannot check, it hides what it did not assert, and a script that must generalise across every spike cannot test what is unique to one. So the harness became a lever instead of a verdict. `.claude/skills/verify-smile/` exposes a CLI of composable primitives with JSON output, `up`, `stamp`, `seed`, `tick`, `events`, `runs`, `panes`, `prs`, `issues`, `gate`, `close-bead`, `kill-pane`, `time`, `trust`, `evidence`, `doctor`, `down`, `list`, and `gc`, and a feature map under `features/`, one page per behaviour with the sections `Sub-features`, `How to get to it (user POV)`, `Driving it with verify-smile`, `Gotchas`, and `Evidence that proves it`. A fresh verifier agent per pull request reads the map page for the behaviour that pull request claims, brings up a fixture, composes the primitives to drive it, and pastes the evidence into the pull request. Builders keep their unit tests and no longer run live features themselves. The evidence standard is `docs/RUNTIME-CONTRACT.md` section 10.
 
 ### Four lanes
 
@@ -84,7 +92,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] Post this plan to David and continue with S0, which no design detail can invalidate. Fold his corrections into a revision before S1 starts.
 - [ ] Keep the trail in `docs/decisions.tsv` through `.claude/skills/show-me-your-work/scripts/log.sh`. One row per spike verdict, pivot, or gate.
-- [ ] Standing orders for every writer, pasted verbatim into every brief. Read `docs/SPEC.md` first. Write only inside the paths the brief names. Never merge. Never edit `docs/SPEC.md`. Run the named verify command and paste its output. Report deviations from the design as findings, not as silent fixes. Cite by name each pstack principle that shaped a choice. If a tool call is denied by the permission system, stop, do not work around it with another tool, and report the denial.
+- [ ] Standing orders for every writer, pasted verbatim into every brief. Read `docs/SPEC.md` first. Write only inside the paths the brief names. Never merge. Never edit `docs/SPEC.md`. Run the spike's unit test command and paste its output; the live boxes are a fresh verifier agent's, not yours. Report deviations from the design as findings, not as silent fixes. Cite by name each pstack principle that shaped a choice. If a tool call is denied by the permission system, stop, do not work around it with another tool, and report the denial.
 - [ ] Post a status line to David at each spike merge. Spike, runtime, verdict, PR link.
 
 ### Spawn owners
@@ -98,20 +106,21 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 ### PR mechanics, for every spike
 
 - [ ] The writer commits through `~/.claude/skills/git-ops/scripts/commit.sh` with a conventional message and pushes through `push.sh`.
-- [ ] The writer opens the pull request with `gh pr create`. The body names what it built, the verify command and its output, deviations, and the principles it cited.
+- [ ] The writer opens the pull request with `gh pr create`. The body names what it built, the unit test command and its output, deviations, and the principles it cited.
+- [ ] A fresh verifier agent, never the writer and never a fork of it, checks the live boxes. It reads the feature map page each box names, brings up a fixture, composes the verify-smile primitives, and pastes the evidence into the pull request. It writes no code.
 - [ ] A fresh non-fork subagent reviews the pull request cold with `.claude/skills/interrogate/references/rubric.md` and `code-quality-review.md`, then the orchestrator applies `lead-judgment.md`. Findings with the category Act On go back to the writer as a follow-up commit.
 - [ ] The orchestrator reads the diff and the verify evidence itself before merging. A writer's summary is not evidence.
 
 ### Verdict and merge, for every spike
 
-- [ ] Verify, unit and Verify, live boxes checked with pasted output.
+- [ ] Verify, unit boxes checked with the builder's pasted test output, and Verify, live boxes checked with the verifier's pasted evidence. A `PASS` line is not evidence.
 - [ ] No open Act On finding.
 - [ ] The orchestrator squash-merges through `gh pr merge --squash --delete-branch` and logs a trail row with the merge SHA and the verdict.
 - [ ] For S1 to S4 the orchestrator also writes both bakeoff rows.
 
 ### Boot recipe, for every live verify
 
-- [ ] `verify-smile` from S0 creates a private repo `smile-verify-<runid>` under David's GitHub account, clones it to a temp directory, stamps SMILE from the branch under test, runs `smile init`, seeds a two-bead graph where bead B depends on bead A, and starts the driver with the stub worker.
+- [ ] The verifier composes the `verify-smile` primitives from S0. `up` creates a private repo `smile-verify-<runid>` under David's GitHub account and clones it to a temp directory, `stamp` stamps SMILE from the branch under test and runs `smile init`, `seed` seeds a two-bead graph where bead B depends on bead A, and `tick` runs the driver with the stub worker. `events`, `runs`, `panes`, `prs`, and `issues` read the state back as JSON.
 - [ ] Panes open in a tmux session named `smile-verify-<runid>`.
 - [ ] Evidence is copied to `~/.smile-verify/<runid>/` before cleanup. `events.jsonl`, the pull request list as JSON, the bd list, and the driver log.
 - [ ] Cleanup kills that tmux session, deletes the repo through `gh repo delete --yes`, and removes the temp directory. Evidence survives.
@@ -123,7 +132,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Files.**
 
 - [ ] Create `.claude/skills/verify-smile/SKILL.md`.
-- [ ] Create `.claude/skills/verify-smile/features/README.md` and one file per feature. `install.md`, `doctor.md`, `loop.md`, `review.md`, `gate.md`, `watchtower.md`.
+- [ ] Create `.claude/skills/verify-smile/features/README.md` and one page per behaviour. `install.md`, `doctor.md`, `mux.md`, `loop.md`, `review.md`, `gate.md`, `watchtower.md`, `narrate.md`. Each page carries the sections `Sub-features`, `How to get to it (user POV)`, `Driving it with verify-smile`, `Gotchas`, and `Evidence that proves it`.
 - [ ] Create `.claude/skills/verify-smile/scripts/verify-smile`, the helper.
 - [ ] Create `.claude/skills/verify-smile/scripts/stub-worker`, a script that behaves as a worker. It writes one file, commits on `smile/<bead-id>`, opens a pull request with the bead trailer, and exits. On a rerun where the pull request exists, it appends a line, commits with `addresses #<issue>` for each open `review` issue naming that pull request, pushes, and exits.
 - [ ] Create `.claude/skills/verify-smile/scripts/stub-reviewer`, a script that answers `APPROVE` for any diff. The `--real-review` flag of the helper uses the real reviewer instead.
@@ -131,7 +140,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 **Build.**
 
 - [ ] `verify-smile up` creates the fixture per the boot recipe and prints the run id and paths.
-- [ ] `verify-smile feature <name> [--real-review]` drives one mapped feature and asserts its end state.
+- [ ] `verify-smile` exposes composable primitives with JSON output, `up`, `stamp`, `seed`, `tick`, `events`, `runs`, `panes`, `prs`, `issues`, `gate`, `close-bead`, `kill-pane`, `time`, `trust`, `evidence`, `doctor`, `down`, `list`, and `gc`, which a verifier composes per a feature map page. No primitive prints a verdict.
 - [ ] `verify-smile down <runid>` runs cleanup and confirms the evidence directory still exists.
 - [ ] Assertions read `events.jsonl`, `gh pr list --json`, and `bd list --json`. Never the driver's own summary.
 
@@ -144,9 +153,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/verify-smile.test.sh` runs `up`, asserts the fixture layout, runs `down`, asserts the repo is gone and the evidence remains. Run `bash tests/verify-smile.test.sh`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] Run the generated skill's own instructions once end to end. Launch, doctor, drive the `install` feature against an empty stamp, capture evidence, clean up. Pass when the evidence directory lists `beads.json` and `prs.json` after cleanup and `beads.json` names both seeded beads. `events.jsonl` first exists after S1.
+- [ ] Verifier drives the harness itself per `features/install.md` and shows the run through `up`, `stamp`, `seed`, `evidence`, and `down` end to end, showing the `up` line naming the runid and path, `gh repo view smile-verify-<runid>` succeeding while up and failing with not found after `down`, and the evidence directory listing `beads.json` and `prs.json` after cleanup with `beads.json` naming both seeded beads. `events.jsonl` first exists after S1.
 
 **Review gate.** None. S0 is not review-gated.
 
@@ -185,9 +194,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/test_core.py` covers install, drift refusal, force, doctor with a missing tool on PATH, events schema, config defaults, pause and resume. Run `bash tests/core-py.test.sh`, which runs the suite once through `uv run`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature install` and `verify-smile feature doctor`. Pass when both print `PASS` and the evidence directory has the doctor transcript.
+- [ ] Verifier drives install and doctor per `features/install.md` and `features/doctor.md` and shows the installer's per-file lines on a first stamp, the `unchanged` lines on a second, the `drifted <path>, use --force` line after editing a stamped file and the `replaced` line under `--force`; and, on a PATH with no `python3`, the eight doctor lines in contract order, `uv` first, all `ok` with exit 0, plus one run with a prerequisite removed showing its `missing <tool> <reason>` line and exit 1. The doctor transcript is in the evidence directory. The verifier also pastes a timing table for the uv runtime, with wall-clock seconds for the first `uv run` of the shim on a cold uv cache, the same call warm, and one `tests/core-py.test.sh` pass, so the cost of the new prerequisite is on the record next to the bakeoff numbers.
 
 **Review gate.** None. S1 is not review-gated.
 
@@ -221,9 +230,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/test_mux.py` covers spawn, alive on a running and an exited command, kill, double kill, and a missing backend name. Run `bash tests/mux-py.test.sh`, which runs the suite once through `uv run`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature mux` spawns three panes in the fixture session, asserts the window count rose by three, kills them, asserts it fell back to where it started. Pass when it prints `PASS`.
+- [ ] Verifier drives the mux seam per `features/mux.md` and shows the window count in the fixture session before any spawn, the three handles printed by the three `smile mux spawn` calls in `tmux:<session>:@<id>` form, the window count after, three higher, with `panes` listing each handle's window, `alive` exiting 0 for each, then `kill-pane` on each, `alive` exiting 1 for each, and the window count back at the starting number.
 
 **Review gate.** None. S2 is not review-gated.
 
@@ -259,9 +268,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/test_driver.py` covers singleton refusal, pause skips claims, max_parallel cap, crash respawn once, and event order. bd and treehouse are real. The mux backend is a fake that records calls. Run `bash tests/driver-py.test.sh`, which runs the suite once through `uv run`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature loop` seeds two beads in the fixture, runs `smile run --once` with the stub worker, and asserts two `bead.claimed`, two `worktree.acquired`, two `pane.spawned`, two run files, and two pull requests with `Bead:` trailers in `gh pr list`; then closes both beads with `bd close`, runs `smile run --once` again, and asserts two `pane.reaped` and `campaign.complete`. Pass when it prints `PASS`. The full sequence through review and merge is S4's live box.
+- [ ] Verifier drives the loop per `features/loop.md` and shows, for each bead, the event lines from `events` in the contract order of section 8's last paragraph, `bead.claimed`, `worktree.acquired`, `pane.spawned`, with their `ts`, `bead`, `actor`, and `detail` fields; the run files from `runs` moving from `runs/` to `runs/waiting/` once the worker has opened its pull request and to `runs/done/` after the bead is closed and the pane reaped; the pane count from `panes` rising by two after the first `tick` and falling back to the starting count after the second; the two pull requests from `prs` each carrying a `Bead: <id>` trailer; and, after `close-bead` on both and a second `tick`, two `pane.reaped` lines and one `campaign.complete`. The full sequence through review and merge is S4's live box.
 
 **Review gate.** None. S3 is not review-gated.
 
@@ -299,11 +308,11 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/test_review.py` covers verdict parsing, the no-verdict-at-head filter, issue creation from findings, the human gate matrix, and audit. GitHub calls go through a recorded fake of `gh`. Run `bash tests/review-py.test.sh`, which runs the suite once through `uv run`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature review` runs the changes-then-approve path with the stub reviewer. Pass when the issue is opened and closed and the pull request merges.
-- [ ] `verify-smile feature review --real-review` runs one bead with the real reviewer on the stub worker's trivial diff. Pass when a verdict event exists with a non-empty `detail`.
-- [ ] `verify-smile feature gate`. Pass when the pull request carries `smile:approved` and stays open, and a manual `gh pr merge` closes the bead on the next tick.
+- [ ] Verifier drives the changes-then-approve path per `features/review.md` with the stub reviewer forced to request changes once, and shows the `review.verdict` line with `detail` `REQUEST CHANGES 1` at the first head SHA; the issue from `issues`, labeled `review`, with the `PR: #<n>` line in its body; the pull request comment carrying that issue URL; the fix round, the run file returning from `runs/waiting/` to `runs/`, the second `pane.spawned`, and the fix commit whose message contains `addresses #<issue>` at a new head SHA; the `issue.resolved` line and the issue closed in `issues`; the `review.verdict` line with `detail` `APPROVE` at that SHA; and the merge, `prs` showing the pull request merged with its merge commit and `close-bead` unnecessary because the bead is already closed. The pasted `events` output is the full per-bead sequence of the contract's section 9 last paragraph, in that exact order. `bead.claimed`, `worktree.acquired`, `pane.spawned`, `pr.opened`, `review.started`, `issue.opened`, `review.verdict`, `review.started`, `issue.resolved`, `review.verdict`, `pr.merged`, `bead.closed`, `pane.reaped`.
+- [ ] Verifier drives one bead with the real reviewer on the stub worker's trivial diff per `features/review.md` and shows the `review.started` line naming the model, the review text written to `<factory>/reviews/<n>-<sha>.md`, and the `review.verdict` line at the pull request head with a non-empty `detail`.
+- [ ] Verifier drives the human gate per `features/gate.md` and shows `gate` reporting the mode it set, the `review.verdict` `APPROVE` line, the pull request in `prs` carrying the label `smile:approved` and still open with no `pr.merged` event, then after a human `gh pr merge` and one more `tick`, the `pr.merged` line with `actor` `human`, the `bead.closed` line, and the bead closed in the bd listing.
 
 **Review gate.** None. S4 is not review-gated.
 
@@ -337,9 +346,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/watchtower.test.sh` covers pause and resume events and the spawn flag. Run `bash tests/watchtower.test.sh`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature watchtower` runs a loop with a stub worker that crashes twice on bead B. Pass when a `watch.escalation` event names bead B and the driver logs `driver.paused` after the watchtower touches the pause file.
+- [ ] Verifier drives escalation per `features/watchtower.md` with the stub worker set to crash twice on bead B, and shows `panes` listing a `watchtower` window in the fixture session; `.factory/watch.md` non-empty and growing across ticks; the two `worker.crashed` lines for bead B with `detail` `attempt 1` then `escalated`, and its run file moved to `runs/crashed/`; the `watch.escalation` line naming bead B with its reason in `detail`; the pause file present; and the `driver.paused` line, after which a `tick` claims no new bead, with `runs` unchanged, until `resume`.
 
 **Review gate.** None. S5 is not review-gated.
 
@@ -370,9 +379,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/narrate.test.sh` covers cursor persistence and escalation-first ordering. Run `bash tests/narrate.test.sh`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature narrate` runs a loop and calls `smile narrate` three times. Pass when the concatenated output equals the event log rendered once with no duplicates.
+- [ ] Verifier drives narration per `features/narrate.md` across a loop and shows the three `smile narrate` outputs side by side with the `events` lines they cover and the `.factory/narrate.cursor` value after each call. The three outputs concatenated equal the event log rendered exactly once, in order, with no line repeated and none missing, a call made with no new events prints nothing and leaves the cursor unchanged, and an escalation line appears before the other lines of the same call.
 
 **Review gate.** None. S6 is not review-gated.
 
@@ -405,9 +414,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `tests/skills.test.sh` checks frontmatter presence and the forbidden-word grep. Run `bash tests/skills.test.sh`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature review --real-review` again on the upgraded reviewer. Pass when the verdict detail contains a `Principles applied` line.
+- [ ] Verifier drives the real reviewer on the upgraded rubric per `features/review.md` and shows the rendered `prompts/reviewer.md` reaching the reviewer, the review text at `<factory>/reviews/<n>-<sha>.md` containing a `Principles applied` line that names each principle, the verdict line in the contract's exact grammar, and the `review.verdict` event at the pull request head carrying that verdict in `detail`.
 
 **Review gate.** None. S7 is not review-gated.
 
@@ -438,9 +447,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] `bash tests/mux-py.test.sh` on this machine runs all three backends.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] `verify-smile feature loop --backend cmux` and `--backend herdr`. Pass when both reach `campaign.complete`. David watches the Herdr run.
+- [ ] Verifier drives the loop once per backend per `features/mux.md` and `features/loop.md`, with `backend` set to `cmux` and then to `herdr`, and shows for each the doctor mux line naming that backend, the handles in `cmux:` and `herdr:` form, the pane counts from `panes` before and after spawn and after kill, and the per-bead event sequence of the contract's section 8 ending in `campaign.complete`, identical across the two backends and to the tmux run. David watches the Herdr run.
 
 **Review gate.** David reviews the Herdr run in chat before merge.
 
@@ -473,9 +482,9 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 
 - [ ] Every `tests/*.test.sh` green on main. Run `bash tests/all.sh`.
 
-**Verify, live.** Tests alone are not sufficient verification. A spike is verified only when its unit and live boxes are all checked.
+**Verify, live.** Tests alone are not sufficient verification. A live box is checked by a fresh verifier agent that drives the fixture with the verify-smile primitives per the feature map page the box names, and pastes the evidence. A script printing `PASS` is not evidence.
 
-- [ ] The dogfood campaign reaches `campaign.complete`. Pass when both pull requests were merged by the driver and `smile audit` prints nothing.
+- [ ] Verifier drives the dogfood campaign per `features/loop.md` and `features/review.md` with real workers and the real reviewer, and shows the full per-bead sequence from `events` for both beads in the contract's section 9 order ending in `campaign.complete`; `prs` showing both pull requests merged with `actor` `driver` on each `pr.merged`; both beads closed in the bd listing; every run file in `runs/done/`; `panes` back to no worker windows; and `smile audit` printing nothing, which is the claim that no pull request merged without a verdict at its merge SHA.
 
 **Review gate.** David reviews the dogfood in chat before the repo goes public.
 
