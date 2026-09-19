@@ -255,3 +255,14 @@ Fix rounds. After `review.verdict` `REQUEST CHANGES` for bead X, `smile review` 
 **Prompt and skill.** `templates/prompts/reviewer.md` is the rendered prompt and carries the execution rules the reviewer follows (read the diff against the spec, judge with the rubric, name principles by name, end with the verdict line and the finding lines in the exact grammar above). `templates/.claude/skills/smile-code-reviewer/SKILL.md` is the same rules for a human-driven interactive review and is not read by the lane. S7 upgrades both.
 
 **Events per bead through S4 with the stub worker and the stub reviewer forced to change once:** `bead.claimed`, `worktree.acquired`, `pane.spawned`, `pr.opened`, `review.started`, `issue.opened`, `review.verdict` (`REQUEST CHANGES 1`), then after the fix push `review.started`, `issue.resolved`, `review.verdict` (`APPROVE`), `pr.merged`, `bead.closed`, `pane.reaped`.
+
+## 10. Evidence standard
+
+This section is normative on what proves a behaviour. A `docs/SPEC.md` **Verify, live** box is checked by a fresh verifier agent that drives a fixture with the verify-smile primitives and pastes evidence into the pull request. Four things are that evidence.
+
+1. The per-bead event sequences of sections 8 and 9, read from `.factory/events.jsonl`, with their `ts`, `event`, `bead`, `pr`, `sha`, `actor`, and `detail` fields, in the order those sections name.
+2. The run-file locations under the factory directory: which bead files sit in `runs/`, `runs/waiting/`, `runs/done/`, and `runs/crashed/`, and when they moved.
+3. The pane counts and handles reported by the mux backend, before and after each spawn and kill, in the handle grammar of section 7.
+4. The pull request and issue states read back from GitHub through `gh`: open, merged with a merge commit, labelled, and the `review` issues with their `PR: #<n>` lines, open or closed.
+
+A verifier's claim without such evidence is not a verified box. Neither is a script printing `PASS`, a driver log line saying it merged, or any summary written by the process under test. Evidence is read from the three stores, never from the driver's own stdout.
