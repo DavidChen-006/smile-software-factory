@@ -135,7 +135,7 @@ Not built. Discord and the OpenClaw gateway, remote workers through crabbox and 
 - [ ] Create `.claude/skills/verify-smile/features/README.md` and one page per behaviour. `install.md`, `doctor.md`, `mux.md`, `loop.md`, `review.md`, `gate.md`, `watchtower.md`, `narrate.md`. Each page carries the sections `Sub-features`, `How to get to it (user POV)`, `Driving it with verify-smile`, `Gotchas`, and `Evidence that proves it`.
 - [ ] Create `.claude/skills/verify-smile/scripts/verify-smile`, the helper.
 - [ ] Create `.claude/skills/verify-smile/scripts/stub-worker`, a script that behaves as a worker. It writes one file, commits on `smile/<bead-id>`, opens a pull request with the bead trailer, and exits. On a rerun where the pull request exists, it appends a line, commits with `addresses #<issue>` for each open `review` issue naming that pull request, pushes, and exits.
-- [ ] Create `.claude/skills/verify-smile/scripts/stub-reviewer`, a script that answers `APPROVE` for any diff. The `--real-review` flag of the helper uses the real reviewer instead.
+- [ ] Create `.claude/skills/verify-smile/scripts/stub-reviewer`, a script that answers `APPROVE` for any diff. The verifier runs the real reviewer by hand per `features/review.md`.
 
 **Build.**
 
