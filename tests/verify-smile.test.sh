@@ -241,8 +241,9 @@ eq "pr.merged names the merge commit GitHub reports" \
 	"$(printf '%s' "$MERGED" | jq_ '([e["sha"] for e in d["events"] if e["event"]=="pr.merged"] or [""])[0]')" \
 	"$("$VS" prs --run "$RUNID" | jl '([r["mergeCommit"] for r in rows if str(r["number"])==a] or [""])[0]' "$PR_E")"
 
-REVC=$("$VS" review "$PR_E" --run "$RUNID" 2>/dev/null); REVC_RC=$?
-eq "review refuses a pull request that is not open" "$REVC_RC" "1"
+REVC=$("$VS" review "$PR_E" --run "$RUNID" 2>/dev/null)
+eq "review refuses a pull request that is not open" "$(printf '%s' "$REVC" | jq_ 'd["exit"]')" "1"
+eq "the refusal is one stderr line" "$(printf '%s' "$REVC" | jq_ 'len(d["stderr"])')" "1"
 eq "a refused review logs nothing" "$(printf '%s' "$REVC" | jq_ 'len(d["events"])')" "0"
 
 # ---------------------------------------------------------------- gate and time
