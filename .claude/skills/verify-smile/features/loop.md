@@ -1,43 +1,58 @@
 # Loop
 
-Loop is the driver taking every ready bead from claim to a worker pane, reaping the pane when the
-bead closes, and exiting when no bead is open. (landed in S3; the review lane and the merges that
-close the beads land in S4)
+Loop is the driver taking every ready bead from claim to a worker pane, holding it while review runs, reaping the pane when the bead closes, and exiting when no bead is open.
 
 ## Sub-features
 
 - `loop-claim` claims each ready bead, acquires a worktree, spawns a pane, and logs `bead.claimed`, `worktree.acquired`, `pane.spawned`.
-- `loop-order` claims B only after A is closed, because bd hides blocked beads.
+- `loop-order` claims a blocked bead only after its blocker closes, because bd hides blocked beads.
+- `loop-waiting` moves the run state file to `.factory/runs/waiting/` with no event when the pane died, the bead is open, and the log holds a `pr.opened` for it.
 - `loop-reap` kills the pane of a closed bead, returns its worktree, logs `pane.reaped`, and moves the run state file to `.factory/runs/done/`.
+- `loop-crash` logs `worker.crashed` when a pane dies with its bead open and no PR, respawns once, then escalates with a second `worker.crashed` (`detail` `escalated`), moves the file to `.factory/runs/crashed/`, and leaves the bead claimed.
 - `loop-complete` logs `campaign.complete`, removes the pid file, and exits when no bead is open and no run is live.
-- `loop-crash` logs `worker.crashed` when a pane dies with its bead open, respawns once, then escalates and leaves the bead claimed.
+- `loop-pause` claims nothing while `.factory/pause` exists, and logs nothing about pausing.
 - `loop-singleton` refuses a second driver for the same repo.
-- `loop-pause` claims nothing while `.factory/pause` exists, and logs nothing about it.
+- `loop-trust` marks each worktree trusted in `~/.claude.json` before spawning into it.
 
 ## How to get to it (user POV)
 
 - Run `smile run` in the stamped repo and watch panes appear in the multiplexer.
 - Run `smile run --once` for a single tick, `--interval <seconds>` for a slower or faster loop.
+- Run `smile pause` and `smile resume`.
 - Run `smile status` to see bead counts, open PRs, and the last events.
 
 ## Driving it with verify-smile
 
 Preconditions:
 
-- A fixture with `install: stamped`, beads A and B seeded, B blocked by A.
-- `SMILE_WORKER_CMD` points at `scripts/stub-worker`. The helper sets it; nothing else spawns workers in S3.
+- A fixture with `install: stamped` and beads from `verify-smile seed`. Two independent beads is the smallest interesting case; `seed --beads 1 --deps <id>` adds a blocked one for `loop-order`.
 
-- **Claim tick.** Run `verify-smile feature loop`. The helper runs `smile init` so the treehouse pool and `.factory/` exist, seeds a third bead C with no blockers so exactly A and C are ready, then runs `<fixture>/smile/smile run --once`. Each of A and C has exactly one `bead.claimed`, one `worktree.acquired`, and one `pane.spawned` in `.factory/events.jsonl`, and `.factory/runs/` holds two run state files.
-- **Pull requests.** The helper polls `gh pr list --state open --json number,body` for up to 200 seconds until two open PRs carry a `Bead: <id>` trailer for A and C. The GitHub API lags behind the worker's `gh pr create`, so this is a poll, not a single read.
-- **Reap tick.** The helper closes A, C, and B with `bd close` (in S4 the review lane closes them), then runs `smile run --once` again. Each of A and C has one `pane.reaped`, `.factory/runs/done/` holds two files, the log ends with `campaign.complete`, and `.factory/driver.pid` is gone.
-- **Not driven live.** The singleton refusal, the stale pid file, the `max_parallel` cap, the pause skip, crash respawn and escalation, the work order substitution, the worker argv and environment, and the trust edit. `tests/driver.test.sh` proves those against scratch repos with real bd and treehouse and a fake tmux.
-- **Proof.** `~/.smile-verify/<runid>/loop.log` holds both ticks, the PR list, and the last fifteen events. It prints `PASS loop` or `FAIL loop: <reason>`, and `NOT IMPLEMENTED loop (no smile/py/run.py stamped)` with exit 2 when the stamp has no driver.
+- **Claim tick.** `verify-smile tick` runs one `smile run --once` in the run world. The object it prints carries `exit` and every event appended during the tick.
+- **Live state.** `verify-smile runs` lists the run state files under `live`, one per claimed bead, each with `bead`, `worktree`, `handle`, `order`, `attempts`, `spawned_at`. `verify-smile panes` shows one window per spawned bead. `verify-smile trust` shows each worktree path mapped to `true`.
+- **Pull requests.** `verify-smile prs` lists one open PR per bead with its `Bead:` trailer resolved into the `bead` field. GitHub's API lags the worker's `gh pr create` by seconds, so re-read `prs` rather than assuming the first read is final.
+- **Order.** With a bead seeded `--deps <blocker>`, the claim tick logs no `bead.claimed` for it. After `verify-smile close-bead <blocker>`, the next `verify-smile tick` claims it.
+- **Waiting.** After the workers open their PRs and their panes exit, `verify-smile tick` moves each run file to `waiting` with no event of its own. `verify-smile runs` shows them under `waiting`, not `live`.
+- **Reap.** Once the beads are closed (by the review lane, or by `verify-smile close-bead <id>` standing in for it), `verify-smile tick` logs one `pane.reaped` per bead, moves each run file to `done`, and logs `campaign.complete`.
+- **Crash and escalation.** `verify-smile tick --worker-crash <bead>` makes the stub worker exit 3 for that bead. Tick again: `worker.crashed` (`detail` `attempt 1`) and a respawn with a second `pane.spawned` and no new `bead.claimed`. Tick again: a second `worker.crashed` with `detail` `escalated`, and the run file under `crashed`.
+- **Pause.** `verify-smile time pause --n 1` creates `.factory/pause` and logs `driver.paused`. The next `verify-smile tick` claims nothing. `verify-smile time resume --n 1` removes it and logs `driver.resumed`.
+- **Not driven live.** The singleton refusal, the stale pid file, the `max_parallel` cap, the work order substitution, and the worker argv. `tests/driver.test.sh` proves those against scratch repos with real bd and treehouse and a fake tmux.
+
+## Evidence that proves it
+
+- Per bead, in order, from `verify-smile events --bead <id>`: `bead.claimed`, `worktree.acquired` (`detail` the worktree path), `pane.spawned` (`detail` the handle). Exactly one of each; a repeated `bead.claimed` is a double claim, which is a finding.
+- `verify-smile runs`: two live entries after the claim tick, the same two under `waiting` after the workers finish, the same two under `done` after the reap tick, and `live` empty at the end.
+- `verify-smile prs`: one object per bead with `"state": "OPEN"` and a non-null `bead`, later `"state": "MERGED"` with a `mergedAt` timestamp. GitHub's own answer, not the driver's summary.
+- `verify-smile panes`: the window count rises by one per claimed bead and falls back after the reap.
+- `verify-smile trust`: one entry per acquired worktree, each `true`, and the path under `~/.smile-verify/<runid>/home/.claude.json`, never the real home.
+- The last events of the run: `pane.reaped` per bead, then one `campaign.complete` with a null bead. `<fixture>/.factory/driver.pid` does not exist afterwards.
+- For the crash path: `worker.crashed` `attempt 1`, a second `pane.spawned` for the same bead with no second `bead.claimed`, then `worker.crashed` `escalated`, and the bead still claimed in `beads.json`.
 
 ## Gotchas
 
-- S3 stops at `pane.reaped`. The spec's live box for S3 names `pr.opened`, `review.started`, `review.verdict`, `pr.merged`, and `bead.closed` as well; those are the review lane, which lands in S4, and this feature file is re-driven then.
-- The helper points `HOME` at `~/.smile-verify/<runid>/home`, because the driver writes the trust flag into `~/.claude.json` and treehouse pools its worktrees under `$HOME`. Nothing under the real home is linked into it. The run gets its own `GIT_CONFIG_GLOBAL` holding the `!gh auth git-credential` helper and the real `user.name`/`user.email`, plus `GIT_CONFIG_NOSYSTEM=1`, because the Xcode command-line tools put `credential.helper = osxkeychain` in the *system* config, which still applies under `GIT_CONFIG_GLOBAL`, and a scratch home has no login keychain, so git would make macOS pop a "reset keychain" dialog on every fetch and push. gh keeps this account's token in that keyring, so the helper is answered from `GH_TOKEN`, read once while `HOME` is still the real one; no token is written to disk. The worker pane gets the same scratch world through a wrapper script, since a pane inherits the multiplexer session's environment, not the driver's. `down` removes a `home/Library` link an older run left behind.
-- The stub worker pushes to the fixture's `main`, so a leftover branch protection on the account would break it. The fixture has none.
-- A pane inherits the multiplexer session's environment, not the driver's, so the four worker variables ride on the command line through `env`. Asserting them belongs to `tests/driver.test.sh`, where the fake tmux runs the command itself.
-- The helper never kills a window it did not spawn; the reap tick kills the two it opened, and `verify-smile down` owns the session.
-- A tick shorter than the stub's push plus PR create could double-claim if the driver read bd before its own claim committed. Assert exactly one `bead.claimed` per bead, as this feature does.
+- The run world points `HOME` at `~/.smile-verify/<runid>/home`, because the driver writes the trust flag into `~/.claude.json` and treehouse pools its worktrees under `$HOME`. Nothing under the real home is linked into it. The run gets its own `GIT_CONFIG_GLOBAL` holding the `!gh auth git-credential` helper and the real `user.name`/`user.email`, plus `GIT_CONFIG_NOSYSTEM=1`, because the Xcode command-line tools put `credential.helper = osxkeychain` in the *system* config, which still applies under `GIT_CONFIG_GLOBAL`, and a scratch home has no login keychain, so git would make macOS pop a "reset keychain" dialog on every fetch and push. gh keeps this account's token in that keyring, so the helper is answered from `GH_TOKEN`, read once while `HOME` is still the real one; no token is written to disk. The worker pane and the reviewer subprocess both re-enter that world through a wrapper, since a pane inherits the multiplexer session's environment, not the driver's.
+- A tick that exits non-zero (a gh hiccup, bd contention on a concurrent read) is reported in the JSON and is not by itself a failure: the next tick re-reads the world. Only the end state decides.
+- The stub worker pushes to the fixture's `main`, so a leftover branch protection on the account would break it. A fresh fixture has none.
+- A tick shorter than the stub's push plus PR create could double-claim if the driver read bd before its own claim committed. Assert exactly one `bead.claimed` per bead.
+- Without `--worker-sleep` the worker's pane is usually gone before you can look at it. That is why `waiting` appears on the very next tick.
+- `--worker-crash <bead>` keeps crashing for as long as you pass it, so the respawn and the escalation are separate ticks you choose, not a race.
+- Never kill a window this run did not spawn. `kill-pane` only ever kills the handle in a run state file, and `down` owns the session.

@@ -14,6 +14,8 @@
 #
 # Crash simulation: if SMILE_STUB_CRASH_BEADS (space-separated ids) names this bead, exit 3 the
 # first SMILE_STUB_CRASH_TIMES times (default 1). Counter: $SMILE_REPO/.factory/stub/crash-<bead>.count
+#
+# Slow worker: SMILE_STUB_SLEEP=<seconds> sleeps first, so the pane is still alive on the next tick.
 set -euo pipefail
 
 : "${SMILE_BEAD:?SMILE_BEAD unset}"
@@ -21,6 +23,11 @@ set -euo pipefail
 BASE="${SMILE_BASE_BRANCH:-main}"
 TITLE="${SMILE_BEAD_TITLE:-$SMILE_BEAD}"
 ORDER="${1:-}"
+
+case "${SMILE_STUB_SLEEP:-0}" in
+	0|'') ;;
+	*) sleep "$SMILE_STUB_SLEEP" ;;
+esac
 
 crash_dir="$SMILE_REPO/.factory/stub"
 for b in ${SMILE_STUB_CRASH_BEADS:-}; do
