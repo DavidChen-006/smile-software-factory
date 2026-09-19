@@ -63,9 +63,7 @@ Preconditions: a fixture with `install: stamped` and at least one seeded bead.
 
 ## Gotchas
 
-- The stamp and the seed put events in the log before the first tick, so a first `narrate` that
-  prints `campaign.start` and friends is correct. Take a baseline call before the loop or the first
-  narration will not line up with the first tick's events.
+- `stamp` and `seed` write nothing to `events.jsonl`; the log is empty until the first `tick`, so a `narrate` before it prints nothing and leaves no cursor file (verified 2026-09-19, run 7abd).
 - The cursor counts bytes, not lines: a `detail` with multi-byte characters makes the cursor larger
   than the character count. Compare it with `wc -c`, never `wc -l`.
 - `smile narrate` appends no event, so a `verify-smile events --since <n>` taken around a narrate
