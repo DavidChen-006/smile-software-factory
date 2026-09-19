@@ -52,4 +52,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Review](./review.md) verdicts, finding issues, the fix round, and the merge.
 - [Gate](./gate.md) the modes, the `smile:approved` label, and the manual merge close.
 - [Audit](./audit.md) merges with no `APPROVE` verdict at their head SHA.
+- [Narration](./narrate.md) the cursor, escalation-first ordering, and what a planner session relays.
 - [uv runtime](./uv-runtime.md) the shim on a PATH with no `python3`, and what the indirection costs.
