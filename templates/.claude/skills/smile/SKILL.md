@@ -13,7 +13,7 @@ argument-hint: "[full | dark | build <prompt> | status]"
 
 One skill on top of the stage skills. It reads the repository to decide where a
 run starts, then hands each step to the skill that owns it. The ladder
-(grilling, draftspec, architect, preflight, campaign) is advisory; the spec
+(smile-grilling, smile-draftspec, smile-architect, smile-preflight, smile-campaign) is advisory; the spec
 freeze is the only enforced gate. This skill sequences and narrates: it plans no
 graph, writes no spec, and creates no bead of its own except in `build`.
 
@@ -38,17 +38,23 @@ this session remembers. Check in order:
 
 | Check, in order | Fact | Next stage |
 |---|---|---|
-| spec | newest `docs/*SPEC*.md` or `docs/*DESIGN*.md` by mtime, ties broken by the greater path string | absent: `grilling`, then `draftspec` writes it |
+| spec | newest `docs/*SPEC*.md` or `docs/*DESIGN*.md` by mtime, ties broken by the greater path string | absent: `smile-grilling`, then `smile-draftspec` writes it |
 | frozen | `git log -1 -- <spec>` prints a commit and the working tree copy is unchanged | not frozen: ask the user to commit it; this skill never commits a spec |
-| architecture | the spec contains a `## Architecture` heading | absent: `architect`, which appends that section to the spec (a second freeze commit follows) |
-| preflight | `docs/<spec basename without .md>.preflight.md` exists and is committed | absent: `preflight`, whose notepad is written to that path |
-| campaign | `.factory/events.jsonl` holds a `campaign.start` newer than the spec's last commit | absent: `campaign` |
+| architecture | the spec contains a `## Architecture` heading | absent: `smile-architect`, which appends that section to the spec (a second freeze commit follows) |
+| preflight | `docs/preflight/<spec basename>` exists and is committed (a directory, so the spec glob never matches it) | absent: `smile-preflight`, whose notepad is written to that path; this skill then commits it |
+| campaign | `.factory/events.jsonl` holds a `campaign.start` newer than the spec's last commit | absent: `smile-campaign` |
 
 ## The one rule
 
-**Load the stage skill by name and follow it. Never do stage work yourself.**
-When the table says `draftspec`, read that skill and run its interview; do not
-write a spec from this file. When it says `campaign`, read the campaign skill
-and follow every step of it, including its refusal without a frozen spec. Each
+**Load the stamped stage skill by its prefixed name and follow it. Never do
+stage work yourself, and never a skill of a similar name from elsewhere.**
+Every stage skill lives at `.claude/skills/smile-<stage>/SKILL.md` in this
+repository. When the table says `smile-draftspec`, load the stamped skill
+`smile-draftspec` (`.claude/skills/smile-draftspec/SKILL.md` in this repo) and
+run its interview; do not write a spec from this file. When it says
+`smile-campaign`, load the stamped skill `smile-campaign`
+(`.claude/skills/smile-campaign/SKILL.md` in this repo); never a skill of a
+similar name from elsewhere. Follow every step of it, including its refusal
+without a frozen spec. Each
 stage is entered fresh: nothing is carried between stages except the files they
 leave in the repository.

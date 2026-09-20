@@ -60,6 +60,8 @@ Stop the loop on the first of:
 - `bead.closed` for that bead id — print the pull request URL from the events
   narrate relayed, and say the build is merged.
 - `worker.crashed` with detail `escalated` for that bead — print the escalation
-  and ask the user for their ruling. The campaign is parked; do not restart it.
+  and ask the user for their ruling. The run is parked; do not restart it.
+- `campaign.complete` — the driver finished. Print what narrate last relayed
+  and stop.
 
 Then this page is done. Nothing else is supervised from here.

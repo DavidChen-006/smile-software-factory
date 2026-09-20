@@ -24,9 +24,17 @@ for skill in "$SKILLS"/*/SKILL.md; do
 	front=$(awk 'NR==1 && $0=="---" {inside=1; next} inside && $0=="---" {exit} inside' "$skill")
 	name=$(printf '%s\n' "$front" | awk -F': *' '/^name:/ {print $2; exit}')
 	[ "$name" = "$dir" ] || fail "$dir/SKILL.md frontmatter name is '$name', expected '$dir'"
+	# section 13 — every stamped skill but the router itself carries the smile- prefix, so a
+	# same-named skill in the user's global ~/.claude/skills cannot win name resolution
+	if [ "$dir" != "smile" ]; then
+		case "$dir" in
+		smile-*) ;;
+		*) fail "$dir is a stamped skill without the smile- prefix" ;;
+		esac
+	fi
 	printf '%s\n' "$front" | grep -q '^description:' || fail "$dir/SKILL.md frontmatter has no description"
 done
-[ "$found" -ge 7 ] || fail "expected at least 7 stamped skills, found $found"
+[ "$found" -ge 10 ] || fail "expected at least 10 stamped skills, found $found"
 
 # 2. no skill and neither user-facing document mentions a tool, a service, or a home-directory path
 # from the authoring machine (section 15 extends this grep to README.md and docs/HOW-IT-WORKS.md)
@@ -43,7 +51,13 @@ for verb in full dark build status; do
 	printf '%s\n' "$hint" | grep -q "$verb" || fail "smile argument-hint does not name '$verb'"
 	[ -f "$SMILE/references/$verb.md" ] || fail "smile/references/$verb.md is missing"
 done
-grep -q 'dark' "$SKILLS/campaign/SKILL.md" || fail "campaign/SKILL.md has no dark mode"
+grep -q 'dark' "$SKILLS/smile-campaign/SKILL.md" || fail "smile-campaign/SKILL.md has no dark mode"
+
+# 2c. section 13 — no stamped file hands off to an unprefixed stage skill by name
+STAGES='architect|preflight|draftspec|grilling|test-writer|campaign|watchtower'
+handoff=$(grep -rnE "(^|[^-[:alnum:]])($STAGES)(\` skill| skill\b)|/($STAGES)\`" \
+	"$ROOT/templates" 2>/dev/null)
+[ -z "$handoff" ] || fail "unprefixed skill handoff: $(printf '%s' "$handoff" | tr '\n' ' ')"
 
 # 3. both prompts require the principles line
 for p in worker reviewer; do

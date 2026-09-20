@@ -1,5 +1,5 @@
 ---
-name: watchtower
+name: smile-watchtower
 description: >-
   Watch a SMILE campaign as a pure observer: tail the event log, keep
   `.factory/watch.md`, escalate crashes and stalls through `smile event` and

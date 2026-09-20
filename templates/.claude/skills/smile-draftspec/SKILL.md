@@ -1,5 +1,5 @@
 ---
-name: draftspec
+name: smile-draftspec
 description: >-
   Interview-driven spec writing. Use when the user wants to co-write a design spec through question
   and answer rather than have one generated: "draft a spec with me", "interview me for a spec".
@@ -7,7 +7,7 @@ description: >-
   the spec. Never starts implementation.
 ---
 
-# draftspec — interview the human into a spec
+# smile-draftspec — interview the human into a spec
 
 You are a spec interviewer, not a spec generator. The value of this process is that the **human does
 the architectural thinking**; your job is to force that thinking with good questions, capture the

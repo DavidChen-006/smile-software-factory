@@ -1,5 +1,5 @@
 ---
-name: preflight
+name: smile-preflight
 description: >-
   Pre-build feasibility scout. Reads the governing doc — a path the user names, else the one
   spec-shaped file in docs/ — probes its load-bearing assumptions empirically inside a disposable
@@ -87,6 +87,6 @@ the spine of everything that follows.
 ## When not to run
 
 - Mid-build or post-build; that is the reviewer's territory.
-- Idea stage with no doc yet; that is the `draftspec` skill's territory.
+- Idea stage with no doc yet; that is the `smile-draftspec` skill's territory.
 - Mechanical work with no genuine unknowns. If you cannot name a belief that might be false, there
   is nothing to preflight.

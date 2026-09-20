@@ -1,5 +1,5 @@
 ---
-name: grilling
+name: smile-grilling
 description: >-
   Grill the user relentlessly about a plan, decision, or idea, one question at a time, until the
   decision tree is walked and a shared understanding is reached. Use when a plan or a spec needs to

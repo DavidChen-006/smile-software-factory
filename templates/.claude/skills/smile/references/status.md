@@ -7,7 +7,7 @@ Read-only. Nothing is created, nothing is started.
 Run them from the main checkout, in this order, and keep each answer.
 
 ```bash
-SPEC=$(ls -t docs/*SPEC*.md docs/*DESIGN*.md 2>/dev/null | head -1)   # newest by mtime
+SPEC=$(ls -t docs/*SPEC*.md docs/*DESIGN*.md 2>/dev/null | head -1)   # newest mtime; ties broken by the greater path string
 [ -n "$SPEC" ] || echo "no spec"
 
 git log -1 -- "$SPEC"                    # a commit printed means it was committed
@@ -16,7 +16,7 @@ git status --porcelain -- "$SPEC"        # empty output means the working copy i
 
 grep -q '^## Architecture' "$SPEC"       # exit 0 means the architecture section is there
 
-PRE="docs/$(basename "$SPEC" .md).preflight.md"
+PRE="docs/preflight/$(basename "$SPEC")"
 test -f "$PRE" && git log -1 -- "$PRE"   # exists and committed
 
 # campaign: a campaign.start newer than the spec's last commit
@@ -34,7 +34,7 @@ cross and the fact that decided it:
 [x] spec          docs/FOO-DESIGN.md
 [x] frozen        3c43b99, working copy clean
 [ ] architecture  no ## Architecture heading
-[ ] preflight     docs/FOO-DESIGN.preflight.md missing
+[ ] preflight     docs/preflight/FOO-DESIGN.md missing
 [ ] campaign      no campaign.start after 2026-09-19T10:00:00
 ```
 

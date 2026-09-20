@@ -1,14 +1,14 @@
 ---
-name: campaign
+name: smile-campaign
 description: >-
-  Trigger when the user runs `/campaign` or asks to execute a spec/plan with the
+  Trigger when the user runs `/smile-campaign` or asks to execute a spec/plan with the
   SMILE factory ("run this as a campaign", "execute this spec with the fleet",
   "send the agents at this"). Plans a bead graph FROM a frozen spec, gates the
   graph past the user, creates the beads, starts `smile run` in the background,
   and narrates the campaign with `smile narrate` on every wake.
 ---
 
-# /campaign — execute a frozen spec with the SMILE factory
+# /smile-campaign — execute a frozen spec with the SMILE factory
 
 Turn a frozen spec into a reviewable bead graph, get it approved, create the
 beads, start the driver. The factory does the work: `smile run` claims one

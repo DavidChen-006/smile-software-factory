@@ -9,10 +9,10 @@ stage work from this page.
 The five checks, exactly as in [status.md](status.md):
 
 ```bash
-SPEC=$(ls -t docs/*SPEC*.md docs/*DESIGN*.md 2>/dev/null | head -1)
+SPEC=$(ls -t docs/*SPEC*.md docs/*DESIGN*.md 2>/dev/null | head -1)   # newest mtime; ties broken by the greater path string
 git log -1 -- "$SPEC"; git status --porcelain -- "$SPEC"   # frozen = commit AND empty
 grep -q '^## Architecture' "$SPEC"
-PRE="docs/$(basename "$SPEC" .md).preflight.md"; test -f "$PRE" && git log -1 -- "$PRE"
+PRE="docs/preflight/$(basename "$SPEC")"; test -f "$PRE" && git log -1 -- "$PRE"
 SPEC_TS=$(git log -1 --format=%cI -- "$SPEC")
 grep '"campaign.start"' .factory/events.jsonl 2>/dev/null | tail -1   # ts newer than $SPEC_TS?
 ```
@@ -25,13 +25,16 @@ Before entering each stage, ask exactly one question and wait:
 Next: <stage>. Continue, skip, or stop?
 ```
 
-- **continue** — load the stage skill by name (`grilling`, `draftspec`,
-  `architect`, `preflight`, `campaign`) and follow it to its end. The interview
+- **continue** — load the stamped skill for that stage by its exact prefixed
+  name (`smile-grilling`, `smile-draftspec`, `smile-architect`,
+  `smile-preflight`, `smile-campaign`), each at
+  `.claude/skills/<name>/SKILL.md` in this repo; never a skill of a similar
+  name from elsewhere. Follow it to its end. The interview
   stages talk to the user one question at a time as their own skills say.
 - **skip** — append a line `skipped <stage> <reason>` to
   `docs/<spec basename without .md>.ladder.md` (create the file if absent), then
   move to the next row. When no spec exists yet there is nothing to skip past:
-  `grilling` is the only skippable stage before the spec, and its line is
+  `smile-grilling` is the only skippable stage before the spec, and its line is
   recorded once the spec file has a name.
 - **stop** — print the state table as `status` prints it and end the run. Record
   nothing.
@@ -46,11 +49,19 @@ rather than trusting what the previous one said.
 name the file, and ask the user to commit it. This skill never commits a spec
 and never runs a stage past an unfrozen one.
 
-**architecture** — `architect` appends the `## Architecture` section to the
+**architecture** — `smile-architect` appends the `## Architecture` section to the
 spec, which makes the spec dirty again; the freeze row is re-checked and the
-user commits a second time before `preflight`.
+user commits a second time before `smile-preflight`.
+
+**preflight** — `smile-preflight` writes its notepad to
+`docs/preflight/<spec basename>`. This page then makes the one commit the
+router ever makes:
+
+```bash
+git add docs/preflight && git commit -m "preflight: $(basename "$SPEC")"
+```
 
 ## 4. End
 
-When the campaign row goes true, the campaign skill owns the run from there: its
+When the campaign row goes true, the `smile-campaign` skill owns the run from there: its
 narration loop, not this page. Say the ladder is walked and stop.
