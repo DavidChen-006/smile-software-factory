@@ -34,6 +34,17 @@ hits=$(grep -rli "cursor\|discord\|Downloads\|openclaw\|/Users/" \
 	"$SKILLS" "$ROOT/README.md" "$ROOT/docs/HOW-IT-WORKS.md")
 [ -z "$hits" ] || fail "forbidden words in: $(printf '%s' "$hits" | tr '\n' ' ')"
 
+# 2b. section 16 — the stamped operator skill routes four verbs to four lazy pages
+SMILE="$SKILLS/smile"
+[ -f "$SMILE/SKILL.md" ] || fail "templates/.claude/skills/smile/SKILL.md is missing"
+hint=$(awk 'NR==1 && $0=="---" {inside=1; next} inside && $0=="---" {exit} inside' \
+	"$SMILE/SKILL.md" | grep '^argument-hint:')
+for verb in full dark build status; do
+	printf '%s\n' "$hint" | grep -q "$verb" || fail "smile argument-hint does not name '$verb'"
+	[ -f "$SMILE/references/$verb.md" ] || fail "smile/references/$verb.md is missing"
+done
+grep -q 'dark' "$SKILLS/campaign/SKILL.md" || fail "campaign/SKILL.md has no dark mode"
+
 # 3. both prompts require the principles line
 for p in worker reviewer; do
 	grep -q 'Principles applied:' "$ROOT/templates/prompts/$p.md" ||
