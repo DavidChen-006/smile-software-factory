@@ -1,14 +1,14 @@
 ---
-name: campaign
+name: smile-campaign
 description: >-
-  Trigger when the user runs `/campaign` or asks to execute a spec/plan with the
+  Trigger when the user runs `/smile-campaign` or asks to execute a spec/plan with the
   SMILE factory ("run this as a campaign", "execute this spec with the fleet",
   "send the agents at this"). Plans a bead graph FROM a frozen spec, gates the
   graph past the user, creates the beads, starts `smile run` in the background,
   and narrates the campaign with `smile narrate` on every wake.
 ---
 
-# /campaign — execute a frozen spec with the SMILE factory
+# /smile-campaign — execute a frozen spec with the SMILE factory
 
 Turn a frozen spec into a reviewable bead graph, get it approved, create the
 beads, start the driver. The factory does the work: `smile run` claims one
@@ -92,10 +92,20 @@ for explicit none; `smile gate status` prints where the gate stands and
 
 Present the proposal to the user: each bead with a one-line justification tied
 to the spec's acceptance structure, plus the edges. **Do not run bd create
-before explicit approval.** The graph is a judgment artifact and the user
+before explicit approval.** *(Exception: `dark` mode, below.)* The graph is a judgment artifact and the user
 reviews it — this gate is the entire reason the skill exists. If the user
 argues, the resolution may be upstream: amend the spec's acceptance criteria,
 then re-derive the graph.
+
+### `dark` mode — print the graph, skip the wait
+
+When the user says `dark`, or the `/smile` router enters this skill in `dark`
+mode, the approval wait is pre-approved: print the graph exactly as above, with
+the same per-bead justifications and edges, then go straight to Step 3 without
+asking. Nothing else changes. Step 1 still refuses without a frozen spec, the
+carve law, the human-gate default, the work-order rules, ignition, and the
+narration all stand. Dark pre-approves the graph, not an escalation: a parked
+campaign still waits for the user's ruling.
 
 ## Step 3 — On approval: create the beads
 

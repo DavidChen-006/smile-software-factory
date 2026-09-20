@@ -1,5 +1,5 @@
 ---
-name: test-writer
+name: smile-test-writer
 description: >-
   Specialist test writer. Designs and writes tests along three axes — behavior (invariants, edge
   cases, happy path), priorities (the one or two qualities that matter for this task), and scope

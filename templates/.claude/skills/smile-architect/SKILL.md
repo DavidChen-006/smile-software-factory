@@ -1,5 +1,5 @@
 ---
-name: architect
+name: smile-architect
 description: >-
   Sketch types, signatures, and module structure before code, then stay in the loop while the
   implementation fills it in. Design it twice: at least two structurally distinct candidates in one
