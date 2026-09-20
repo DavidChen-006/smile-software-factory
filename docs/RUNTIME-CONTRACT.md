@@ -303,13 +303,13 @@ The watchtower is one long-lived pane per campaign that observes the event log a
 
 The skills stamped into a target repo under `templates/.claude/skills/` are the worker's, reviewer's, and planner's instructions. The runtime never reads them; `prompts/worker.md`, `prompts/reviewer.md`, and `prompts/watchtower.md` are what the lane renders, and each of those tells its agent which skill to load by name.
 
-**Set.** `smile-code-writer`, `smile-code-reviewer`, `architect`, `preflight`, `draftspec`, `grilling`, `test-writer`, `campaign` (S6), `watchtower` (S5). Their sources and the edits to each are the S7 section of `docs/SPEC.md`; that list is normative for content.
+**Set.** Every stamped skill carries the `smile-` prefix (ruling 2026-09-20, S10 verify: a same-named skill in the user's global `~/.claude/skills`, such as an older `campaign`, wins name resolution and the stamped one never runs): `smile-code-writer`, `smile-code-reviewer`, `smile-architect`, `smile-preflight`, `smile-draftspec`, `smile-grilling`, `smile-test-writer`, `smile-campaign` (S6), `smile-watchtower` (S5), plus the `smile` router of section 16. The S7 section of `docs/SPEC.md` names them without the prefix; this ruling supersedes those names. Every prompt, skill body, and reference page that names a skill uses the prefixed name. Their sources and the edits to each are the S7 section of `docs/SPEC.md`; that list is normative for content.
 
 **Shape.** Every `SKILL.md` starts with YAML frontmatter carrying `name` (equal to its directory name) and a `description` block, then a body. Referenced files live beside it in `references/` and are plain markdown. No skill mentions Cursor, Discord, cmux, a home-directory path, `Downloads`, or `openclaw`; `grep -rli "cursor\|discord\|Downloads\|openclaw\|/Users/" templates/.claude/skills` prints nothing. No Makefile rules, no scripts. The grep is case-insensitive on purpose and stays so (S7 verify, 2026-09-19): the common noun "cursor" is also forbidden in skill prose, so a skill describing narration says "offset" or "its place". The prompts are stamped at `<repo>/prompts/worker.md` and `<repo>/prompts/reviewer.md`, the repo root, not under `smile/`.
 
 **Prompts.** `prompts/worker.md` and `prompts/reviewer.md` require the agent to end with a line `Principles applied: <name>, <name>, ...` naming each principle it applied by the name the skill gives it, before the reviewer's verdict line (section 9 order). The reviewer skill's rubric names the principles; `none` is a valid value when nothing applied.
 
-**Unit check.** `tests/skills.test.sh`: every `templates/.claude/skills/*/SKILL.md` has the frontmatter above with `name` matching its directory; the forbidden-word grep prints nothing; both prompts contain the literal `Principles applied:`. Runs in under five seconds.
+**Unit check.** `tests/skills.test.sh`: every `templates/.claude/skills/*/SKILL.md` has the frontmatter above with `name` matching its directory and, except `smile` itself, starting with `smile-`; no stamped file names an unprefixed stage skill (`grep -rwE "(architect|preflight|draftspec|grilling|test-writer|campaign|watchtower) skill"` and the slash forms `/campaign` etc. print nothing); the forbidden-word grep prints nothing; both prompts contain the literal `Principles applied:`. Runs in under five seconds.
 
 ## 14. cmux and Herdr backends (S8)
 
@@ -355,21 +355,21 @@ Decided 2026-09-19 with David after reading disler/super-simple-software-factory
 
 **Where.** `templates/.claude/skills/smile/SKILL.md` is stamped into the target repo (the source repo's own `.claude/skills/smile` stays the installer skill and is not stamped). Its frontmatter `argument-hint` lists the verbs. The body is a verb table routing to `references/<verb>.md`, plus the rule that the skill does no stage work itself: it loads the stage skill named for that step and follows it. Verbs: `full`, `dark`, `build`, `status`. An unknown verb or none prints the table and stops.
 
-**State, not memory.** The router decides where to start by what exists in the repo, never by what it remembers:
+**State, not memory.** The router decides where to start by what exists in the repo, never by what it remembers. It hands off to the stamped, `smile-`prefixed skill by that exact name and never to an unprefixed one. The spec pick uses section 8's rule exactly, newest mtime and ties by greater path, as one command in every reference page: `ls -t docs/*SPEC*.md docs/*DESIGN*.md 2>/dev/null | head -1` for the mtime, and when two share it the greater path string:
 
 | Check, in order | Fact | Next stage |
 |---|---|---|
-| spec | newest `docs/*SPEC*.md` or `docs/*DESIGN*.md` (section 8's `{{spec_path}}` rule) | absent: `grilling`, then `draftspec` writes it |
+| spec | newest `docs/*SPEC*.md` or `docs/*DESIGN*.md` (section 8's `{{spec_path}}` rule) | absent: `smile-grilling`, then `smile-draftspec` writes it |
 | frozen | `git log -1 -- <spec>` prints a commit and the working tree copy is unchanged | not frozen: ask David to commit it; the router never commits a spec |
-| architecture | the spec contains a `## Architecture` heading | absent: `architect`, which appends that section to the spec (a second freeze commit follows) |
-| preflight | `docs/<spec basename without .md>.preflight.md` exists and is committed | absent: `preflight`, whose notepad is written to that path |
-| campaign | `.factory/events.jsonl` holds a `campaign.start` newer than the spec's last commit | absent: `campaign` |
+| architecture | the spec contains a `## Architecture` heading | absent: `smile-architect`, which appends that section to the spec (a second freeze commit follows) |
+| preflight | `docs/preflight/<spec basename>` exists and is committed (a directory, so the spec glob above never matches it) | absent: `smile-preflight`, whose notepad is written to that path; the router then commits it (`git add docs/preflight && git commit -m "preflight: <spec basename>"`), the one commit the router makes |
+| campaign | `.factory/events.jsonl` holds a `campaign.start` newer than the spec's last commit | absent: `smile-campaign` |
 
 **`full`.** Walk the table top to bottom. Between stages, one question: `Next: <stage>. Continue, skip, or stop?` `skip` records a line `skipped <stage> <reason>` in `docs/<spec basename>.ladder.md` and moves on; `stop` ends the run with the table printed. The interview stages (grilling, draftspec) talk to David one question at a time as their skills say. Each stage is entered fresh by loading its skill; nothing from a previous stage is carried except the files.
 
-**`dark`.** Requires a frozen spec; otherwise one line `dark needs a frozen spec in docs/` and stop. Skips the interviews and the architect, runs preflight when its file is missing, then campaign with the graph gate pre-approved: the campaign skill gains a `dark` mode in which the bead graph is printed and created without waiting for approval. Everything else in the campaign skill is unchanged, including the refusal without a frozen spec.
+**`dark`.** Requires a frozen spec; otherwise one line `dark needs a frozen spec in docs/` and stop. Skips the interviews and the architect, runs preflight when its file is missing, then campaign with the graph gate pre-approved: the `smile-campaign` skill gains a `dark` mode in which the bead graph is printed and created without waiting for approval. Everything else in the campaign skill is unchanged, including the refusal without a frozen spec.
 
-**`build <prompt>`.** No spec needed. Creates exactly one bead: title is the prompt's first line, description is the rest (or the whole prompt when one line), then `nohup smile/smile run > .factory/driver.log 2>&1 &` as the campaign skill does, then `smile narrate` on every wake until that bead's `bead.closed` or `worker.crashed escalated` appears, then prints the PR URL or the escalation. With no spec the worker order's spec path is empty (section 8 allows it) and the reviewer judges the diff against the bead text. This is the counterpart of SSSF's `adw_build_review`.
+**`build <prompt>`.** No spec needed. Creates exactly one bead: title is the prompt's first line, description is the rest (or the whole prompt when one line), then `nohup smile/smile run > .factory/driver.log 2>&1 &` as the campaign skill does, then `smile narrate` on every wake until that bead's `bead.closed`, a `worker.crashed escalated` for it, or `campaign.complete` appears, then prints the PR URL or the escalation. With no spec the worker order's spec path is empty (section 8 allows it) and the reviewer judges the diff against the bead text. This is the counterpart of SSSF's `adw_build_review`.
 
 **`status`.** Prints the state table above with a tick or a cross per row, then `smile status`.
 
