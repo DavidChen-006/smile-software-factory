@@ -348,3 +348,31 @@ S9 proves the factory on a fresh fixture with real workers and the real reviewer
 **Evidence.** The full per-bead sequence from `events --bead` for both beads in section 9 order ending with one `campaign.complete`; `prs` with both PRs `MERGED` and `actor` `driver` on each `pr.merged`; both beads closed; every run file under `runs/done/`; `panes` back to no worker windows; `smile audit` printing nothing; the two `review.started` details equal to `opus`; each review file carrying a `Principles applied:` line before its verdict; the watchtower's `watch.md`; a `smile narrate` transcript. The verifier posts the two PR links, the `watch.md` path, and the narration transcript path. David reads them and says go before the repository is made public; the lead never flips visibility on its own.
 
 **Observed on the first clean run (2026-09-19, five ticks, three minutes):** the driver reaps a pane the tick after it closes the bead, so the sequence ends `bead.closed` then `pane.reaped`, and `campaign.complete` lands on the tick after the last reap. A closed bead is listed only by `bd list --all --json`; plain `bd list --json` hides it. The trust edits in `~/.claude.json` accumulate one entry per worktree and nothing removes them (`verify-smile down` does not; a later ruling names the owner). The stub watchtower's `watch.md` is the event tail it was told to keep, not a report. `verify-smile narrate` prints one JSON object with a `lines` array, as every harness verb prints JSON. For the review gate the verifier leaves the fixture up (no `down`) so the pull requests stay readable; `down` runs after David has read them.
+
+## 16. Operator skill: `/smile full`, `/smile dark`, `/smile build` (S10)
+
+Decided 2026-09-19 with David after reading disler/super-simple-software-factory: keep the per-stage skills (grilling, draftspec, architect, preflight, campaign) and add one stamped router on top, the SSSF shape (one skill, verb as argument, one lazily loaded page per verb). The ladder stays advisory; the spec freeze stays the only enforced gate. The runtime does not change in this spike.
+
+**Where.** `templates/.claude/skills/smile/SKILL.md` is stamped into the target repo (the source repo's own `.claude/skills/smile` stays the installer skill and is not stamped). Its frontmatter `argument-hint` lists the verbs. The body is a verb table routing to `references/<verb>.md`, plus the rule that the skill does no stage work itself: it loads the stage skill named for that step and follows it. Verbs: `full`, `dark`, `build`, `status`. An unknown verb or none prints the table and stops.
+
+**State, not memory.** The router decides where to start by what exists in the repo, never by what it remembers:
+
+| Check, in order | Fact | Next stage |
+|---|---|---|
+| spec | newest `docs/*SPEC*.md` or `docs/*DESIGN*.md` (section 8's `{{spec_path}}` rule) | absent: `grilling`, then `draftspec` writes it |
+| frozen | `git log -1 -- <spec>` prints a commit and the working tree copy is unchanged | not frozen: ask David to commit it; the router never commits a spec |
+| architecture | the spec contains a `## Architecture` heading | absent: `architect`, which appends that section to the spec (a second freeze commit follows) |
+| preflight | `docs/<spec basename without .md>.preflight.md` exists and is committed | absent: `preflight`, whose notepad is written to that path |
+| campaign | `.factory/events.jsonl` holds a `campaign.start` newer than the spec's last commit | absent: `campaign` |
+
+**`full`.** Walk the table top to bottom. Between stages, one question: `Next: <stage>. Continue, skip, or stop?` `skip` records a line `skipped <stage> <reason>` in `docs/<spec basename>.ladder.md` and moves on; `stop` ends the run with the table printed. The interview stages (grilling, draftspec) talk to David one question at a time as their skills say. Each stage is entered fresh by loading its skill; nothing from a previous stage is carried except the files.
+
+**`dark`.** Requires a frozen spec; otherwise one line `dark needs a frozen spec in docs/` and stop. Skips the interviews and the architect, runs preflight when its file is missing, then campaign with the graph gate pre-approved: the campaign skill gains a `dark` mode in which the bead graph is printed and created without waiting for approval. Everything else in the campaign skill is unchanged, including the refusal without a frozen spec.
+
+**`build <prompt>`.** No spec needed. Creates exactly one bead: title is the prompt's first line, description is the rest (or the whole prompt when one line), then `nohup smile/smile run > .factory/driver.log 2>&1 &` as the campaign skill does, then `smile narrate` on every wake until that bead's `bead.closed` or `worker.crashed escalated` appears, then prints the PR URL or the escalation. With no spec the worker order's spec path is empty (section 8 allows it) and the reviewer judges the diff against the bead text. This is the counterpart of SSSF's `adw_build_review`.
+
+**`status`.** Prints the state table above with a tick or a cross per row, then `smile status`.
+
+**Unit check.** `tests/skills.test.sh` additionally asserts: the stamped `smile` skill exists with `argument-hint` naming the four verbs, `references/full.md`, `dark.md`, `build.md`, `status.md` exist, the campaign skill contains the literal `dark`, and the forbidden-word grep covers the new files. Under five seconds.
+
+**Evidence.** Live, on a stamped fixture with the real worker and reviewer: `claude -p "/smile build add hello.py that prints hello"` from the fixture root ends with one merged PR and the section 9 sequence for that bead. Then, with a two-line committed spec, `claude -p "/smile dark"` reaches `campaign.complete` with no question asked. `full` is verified statically (the router text and the state table) because its interviews need a person.
