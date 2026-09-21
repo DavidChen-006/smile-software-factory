@@ -42,10 +42,10 @@ graph TB
     Watch --> Log
     Watch -.pause.-> Driver
 
-    style Spec fill:#f0f0f0,color:#000000
-    style Driver fill:#e1f5ff,color:#000000
-    style Log fill:#fff4e1,color:#000000
-    style Watch fill:#eef7f0,color:#000000
+    style Spec fill:#2d5c8a,stroke:#8fb3e0,color:#ffffff
+    style Driver fill:#2f6b45,stroke:#8fd0a0,color:#ffffff
+    style Log fill:#8a5a1e,stroke:#e0b070,color:#ffffff
+    style Watch fill:#5b3f8a,stroke:#b89ae0,color:#ffffff
 ```
 
 The four lanes never call each other. They meet in the event log.
@@ -198,7 +198,6 @@ Every workflow is one stamped skill, `/smile`, with the verb as its argument. Th
 ### The planning ladder
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#eef4fb','primaryTextColor':'#1c2c4c','primaryBorderColor':'#5b7ea8','lineColor':'#4a5568','fontSize':'14px'}}}%%
 flowchart LR
     Start([/smile full]) --> Grill(grilling<br/>one question at a time)
     Grill --> Draft(draftspec<br/>writes docs/SPEC.md)
@@ -210,10 +209,10 @@ flowchart LR
     Pre --> Camp[[campaign<br/>plan the graph, start the driver]]
     Camp --> Done([merged pull requests])
 
-    classDef terminal fill:#1c2c4c,stroke:#1c2c4c,color:#ffffff
-    classDef action fill:#eef4fb,stroke:#5b7ea8,color:#1c2c4c
-    classDef decision fill:#fdf3e3,stroke:#c98a42,color:#5a3d1a
-    classDef subproc fill:#eef7f0,stroke:#5b9a6e,color:#1e4028
+    classDef terminal fill:#1f3a5f,stroke:#8fb3e0,color:#ffffff
+    classDef action fill:#2d5c8a,stroke:#8fb3e0,color:#ffffff
+    classDef decision fill:#8a5a1e,stroke:#e0b070,color:#ffffff
+    classDef subproc fill:#2f6b45,stroke:#8fd0a0,color:#ffffff
     class Start,Done terminal
     class Grill,Draft,Ask,Arch,Pre action
     class Freeze decision
@@ -238,7 +237,6 @@ smile/smile pause                      # claim no new beads; smile resume lifts 
 Every sixty seconds the driver does exactly this, in this order.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#eef4fb','primaryTextColor':'#1c2c4c','primaryBorderColor':'#5b7ea8','lineColor':'#4a5568','fontSize':'14px'}}}%%
 flowchart TD
     T([tick]) --> Reap(1. Reap<br/>inspect every run file)
     Reap --> Dead{pane dead?}
@@ -258,11 +256,11 @@ flowchart TD
     Done -->|no| Sleep([sleep, next tick])
     Done -->|yes| Complete([reap the watchtower, campaign.complete])
 
-    classDef terminal fill:#1c2c4c,stroke:#1c2c4c,color:#ffffff
-    classDef action fill:#eef4fb,stroke:#5b7ea8,color:#1c2c4c
-    classDef decision fill:#fdf3e3,stroke:#c98a42,color:#5a3d1a
-    classDef external fill:#f3eefb,stroke:#8a6db1,color:#3d2a5a
-    classDef error fill:#fbeeee,stroke:#b15858,color:#5a1c1c
+    classDef terminal fill:#1f3a5f,stroke:#8fb3e0,color:#ffffff
+    classDef action fill:#2d5c8a,stroke:#8fb3e0,color:#ffffff
+    classDef decision fill:#8a5a1e,stroke:#e0b070,color:#ffffff
+    classDef external fill:#5b3f8a,stroke:#b89ae0,color:#ffffff
+    classDef error fill:#8a2f2f,stroke:#e08f8f,color:#ffffff
     class T,Sleep,Complete terminal
     class Reap,Review,Spawn,Respawn action
     class Dead,Crash,Claim,Done decision
