@@ -310,44 +310,6 @@ smile/smile audit     # prints nothing when every merge was approved at its SHA
 | `merge` | `auto` | `manual` leaves every approved pull request for you |
 | `base_branch` | `main` | Where pull requests target and merge |
 
-## Advanced concepts
-
-### Bead lifecycle
-
-A bead's status is where its run file sits. No field is edited; the file moves.
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Ready: bd create, blockers closed
-    Ready --> Live: claimed, worktree leased, pane spawned
-    Live --> Waiting: pull request open
-    Waiting --> Live: request changes, fix round
-    Live --> Live: crashed once, respawned
-    Live --> Crashed: crashed twice, escalated
-    Waiting --> Done: approved and merged, bead closed
-    Done --> [*]
-    Crashed --> [*]: campaign paused for you
-```
-
-### The multiplexer seam
-
-```bash
-smile/smile mux spawn <name> <cwd> <command> [args...]   # prints a handle
-smile/smile mux alive <handle>                            # exit 0 while it runs
-smile/smile mux kill <handle>                             # exit 0 even if already gone
-```
-
-A handle is `<backend>:<rest>`, so it names its own backend and nothing else has to track which one is in use. A pane inherits the multiplexer server's environment, not the driver's, so everything a worker needs travels on its command line.
-
-### Why workers run in print mode
-
-Everything the driver learns about a worker comes through `alive`. An interactive agent never exits, so its pane would never die and the driver would wait forever. A worker runs headless with permissions bypassed inside its own worktree, does its order, and exits.
-
-### Skills
-
-Nine skills are stamped beside the runtime, all prefixed `smile-` so they never collide with a skill of the same name installed elsewhere: `smile-code-writer` and `smile-code-reviewer` are what the worker and reviewer prompts point at; `smile-grilling`, `smile-draftspec`, `smile-architect`, `smile-preflight`, and `smile-campaign` are the ladder; `smile-test-writer` and `smile-watchtower` are helpers. The runtime never reads them; the prompts name them.
-
 ## Project roles
 
 | Role | What it is | Interface |
